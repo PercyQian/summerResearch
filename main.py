@@ -793,7 +793,16 @@ def loadDataByHour(hour : str) -> pd.DataFrame:
 
 
 # %%
-X_train, X_test, y_train, y_test = loadDataByHour("8PM")
+data = loadDataByHour("8PM")
+
+inputs = (data.describe().columns[:-2])
+outputs = (data.describe().columns[-2:])
+
+scaler = StandardScaler()
+scaler.fit(data[inputs])
+X = scaler.transform(data[inputs])
+
+X_train, X_test, y_train, y_test = train_test_split(X, data[outputs]["target_c"], test_size=0.2, shuffle=False)
 
 # %%
 from xgboost import XGBClassifier
@@ -845,7 +854,7 @@ logReg params : params = {
 
 # %%
 from sklearn.inspection import permutation_importance
-
+from sklearn.ensemble import RandomForestClassifier
 # %%
 com = loadDataByHour("8PM")
 
@@ -855,15 +864,17 @@ outputs = (com.describe().columns[-2:])
 
 # %%
 def plot_features(model, model_params = None) ->list:
-
     com = loadDataByHour("8PM")
-
-
     inputs = (com.describe().columns[:-2])
     outputs = (com.describe().columns[-2:])
 
+    scaler = StandardScaler()
+    scaler.fit(com[inputs])
+    X = scaler.transform(com[inputs])
 
-    model.fit(X_train,y_train)
+    X_train, X_test, y_train, y_test = train_test_split(X, com[outputs]["target_c"], test_size=0.2, shuffle=False)
+
+    model.fit(X_train, y_train)
 
     r = permutation_importance(model, X_train, y_train, n_repeats=1, random_state=42)
 
@@ -875,9 +886,7 @@ def plot_features(model, model_params = None) ->list:
         features.append(inputs[i])
         values.append(r.importances_mean[i])
 
-
     fig, ax = plt.subplots()
-
     fig.set_figheight(12)
     fig.set_figwidth(16)
     y_pos = np.arange(len(features))
@@ -887,11 +896,11 @@ def plot_features(model, model_params = None) ->list:
     ax.invert_yaxis() 
 
     ax.set_xlabel("Features")
-    ax.set_ylabel("Feture Importance")
+    ax.set_ylabel("Feature Importance")
     ax.set_title("Importance of Features on target")
     plt.show()
 
-    return  dict(zip(features, values))
+    return dict(zip(features, values))
 
 # %%
 rlf_features = plot_features(RandomForestClassifier())
@@ -907,20 +916,26 @@ X = scaler.transform(com[rlf_features])
 
 X_train, X_test, y_train, y_test = train_test_split(X,com[outputs]["target_c"],test_size=0.2, shuffle=False)
 
-rlf_params ={'criterion': 'log_loss', 'min_samples_leaf': 8, 'n_estimators': 10}
+# 计算类别权重
+from sklearn.utils.class_weight import compute_class_weight
+class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+class_weight_dict = dict(zip(np.unique(y_train), class_weights))
 
-rlf = RandomForestClassifier(**params)
+# RandomForest - 修改参数
+rlf_params = {
+    'criterion': 'gini',  # 改用gini不纯度
+    'min_samples_leaf': 2,  # 减小最小叶子节点样本数
+    'n_estimators': 100,  # 增加树的数量
+    'class_weight': class_weight_dict,  # 添加类别权重
+    'max_depth': 10  # 限制树的深度
+}
+rlf = RandomForestClassifier(**rlf_params)
+rlf.fit(X_train, y_train)
+y_pred = rlf.predict(X_test)
 
-rlf.fit(X_train,y_train)
-
-trainResult = rlf.score(X_train,y_train)
-testResult = rlf.score(X_test,y_test)
-confusionMatrix = confusion_matrix(y_test, rlf.predict(X_test))
-
-print("Training", trainResult)
-print("Testing: ",testResult)
-print()
-print(confusionMatrix)
+# 使用新的评估方法
+print("\nRandom Forest 评估结果:")
+evaluate_anomaly_detection(y_test, y_pred, "Random Forest")
 
 # %%
 log_features = plot_features(LogisticRegression())
@@ -936,19 +951,23 @@ X = scaler.transform(com[log_features])
 
 X_train, X_test, y_train, y_test = train_test_split(X,com[outputs]["target_c"],test_size=0.2, shuffle=False)
 
+# 计算类别权重
+from sklearn.utils.class_weight import compute_class_weight
+class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+class_weight_dict = dict(zip(np.unique(y_train), class_weights))
 
-rlf = LogisticRegression()
+# Logistic Regression - 修改参数
+lr = LogisticRegression(
+    class_weight=class_weight_dict,  # 添加类别权重
+    max_iter=1000,  # 增加最大迭代次数
+    C=1.0  # 调整正则化强度
+)
+lr.fit(X_train, y_train)
+y_pred = lr.predict(X_test)
 
-rlf.fit(X_train,y_train)
-
-trainResult = rlf.score(X_train,y_train)
-testResult = rlf.score(X_test,y_test)
-confusionMatrix = confusion_matrix(y_test, rlf.predict(X_test))
-
-print("Training", trainResult)
-print("Testing: ",testResult)
-print()
-print(confusionMatrix)
+# 使用新的评估方法
+print("\nLogistic Regression 评估结果:")
+evaluate_anomaly_detection(y_test, y_pred, "Logistic Regression")
 
 # %%
 svc_features = plot_features(SVC())
@@ -964,19 +983,24 @@ X = scaler.transform(com[svc_features])
 
 X_train, X_test, y_train, y_test = train_test_split(X,com[outputs]["target_c"],test_size=0.2, shuffle=False)
 
+# 计算类别权重
+from sklearn.utils.class_weight import compute_class_weight
+class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+class_weight_dict = dict(zip(np.unique(y_train), class_weights))
 
-rlf = SVC(C=0.01)
+# SVC - 修改参数
+svc = SVC(
+    C=1.0,  # 增加C值
+    probability=True,
+    class_weight=class_weight_dict,  # 添加类别权重
+    kernel='rbf'  # 使用RBF核
+)
+svc.fit(X_train, y_train)
+y_pred = svc.predict(X_test)
 
-rlf.fit(X_train,y_train)
-
-trainResult = rlf.score(X_train,y_train)
-testResult = rlf.score(X_test,y_test)
-confusionMatrix = confusion_matrix(y_test, rlf.predict(X_test))
-
-print("Training", trainResult)
-print("Testing: ",testResult)
-print()
-print(confusionMatrix)
+# 使用新的评估方法
+print("\nSVC 评估结果:")
+evaluate_anomaly_detection(y_test, y_pred, "SVC")
 
 # %%
 xgb_features = plot_features(XGBClassifier())
@@ -992,19 +1016,27 @@ X = scaler.transform(com[xgb_features])
 
 X_train, X_test, y_train, y_test = train_test_split(X,com[outputs]["target_c"],test_size=0.2, shuffle=False)
 
-xgb_params = {'colsample_bytree': 0.6, 'gamma': 5, 'max_depth': 3, 'min_child_weight': 5, 'subsample': 0.8}
-rlf = XGBClassifier(**params)
+# 计算类别权重
+from sklearn.utils.class_weight import compute_class_weight
+class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+class_weight_dict = dict(zip(np.unique(y_train), class_weights))
 
-rlf.fit(X_train,y_train)
+# XGBoost - 修改参数
+xgb_params = {
+    'colsample_bytree': 0.8,
+    'gamma': 1,
+    'max_depth': 5,
+    'min_child_weight': 2,
+    'subsample': 0.8,
+    'scale_pos_weight': len(y_train[y_train==0]) / len(y_train[y_train!=0])  # 添加类别权重
+}
+xgb = XGBClassifier(**xgb_params)
+xgb.fit(X_train, y_train)
+y_pred = xgb.predict(X_test)
 
-trainResult = rlf.score(X_train,y_train)
-testResult = rlf.score(X_test,y_test)
-confusionMatrix = confusion_matrix(y_test, rlf.predict(X_test))
-
-print("Training", trainResult)
-print("Testing: ",testResult)
-print()
-print(confusionMatrix)
+# 使用新的评估方法
+print("\nXGBoost 评估结果:")
+evaluate_anomaly_detection(y_test, y_pred, "XGBoost")
 
 # %%
 # Since logistic regression is our strongest model, I will base the classifiers off it 
@@ -1140,4 +1172,123 @@ print(confusionMatrix)
 # %%
 
 
+# %%
+from sklearn.metrics import precision_recall_fscore_support, roc_auc_score
 
+def evaluate_anomaly_detection(y_true, y_pred, model_name=""):
+    # 计算每个类别的精确率、召回率和F1分数
+    precision, recall, f1, _ = precision_recall_fscore_support(y_true, y_pred, average=None)
+    
+    # 计算ROC AUC（对于多分类问题）
+    try:
+        roc_auc = roc_auc_score(y_true, y_pred, multi_class='ovr')
+    except:
+        roc_auc = None
+    
+    print(f"\n{model_name} 异常检测评估:")
+    print("类别 0 (正常值):")
+    print(f"精确率: {precision[0]:.3f}")
+    print(f"召回率: {recall[0]:.3f}")
+    print(f"F1分数: {f1[0]:.3f}")
+    
+    print("\n类别 1 (正异常):")
+    print(f"精确率: {precision[1]:.3f}")
+    print(f"召回率: {recall[1]:.3f}")
+    print(f"F1分数: {f1[1]:.3f}")
+    
+    print("\n类别 2 (负异常):")
+    print(f"精确率: {precision[2]:.3f}")
+    print(f"召回率: {recall[2]:.3f}")
+    print(f"F1分数: {f1[2]:.3f}")
+    
+    if roc_auc is not None:
+        print(f"\nROC AUC: {roc_auc:.3f}")
+    
+    return {
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'roc_auc': roc_auc
+    }
+
+# 使用原有的数据处理流程
+rlf_features = plot_features(RandomForestClassifier())
+rlf_features = [i for i in list(rlf_features.keys()) if rlf_features[i] > 0]
+
+scaler = StandardScaler()
+scaler.fit(com[rlf_features])
+X = scaler.transform(com[rlf_features])
+
+X_train, X_test, y_train, y_test = train_test_split(X, com[outputs]["target_c"], test_size=0.2, shuffle=False)
+
+# 计算类别权重
+from sklearn.utils.class_weight import compute_class_weight
+class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+class_weight_dict = dict(zip(np.unique(y_train), class_weights))
+
+# RandomForest - 修改参数
+rlf_params = {
+    'criterion': 'gini',  # 改用gini不纯度
+    'min_samples_leaf': 2,  # 减小最小叶子节点样本数
+    'n_estimators': 100,  # 增加树的数量
+    'class_weight': class_weight_dict,  # 添加类别权重
+    'max_depth': 10  # 限制树的深度
+}
+rlf = RandomForestClassifier(**rlf_params)
+rlf.fit(X_train, y_train)
+y_pred = rlf.predict(X_test)
+
+# 使用新的评估方法
+print("\nRandom Forest 评估结果:")
+evaluate_anomaly_detection(y_test, y_pred, "Random Forest")
+
+# XGBoost - 修改参数
+xgb_params = {
+    'colsample_bytree': 0.8,
+    'gamma': 1,
+    'max_depth': 5,
+    'min_child_weight': 2,
+    'subsample': 0.8,
+    'scale_pos_weight': len(y_train[y_train==0]) / len(y_train[y_train!=0])  # 添加类别权重
+}
+xgb = XGBClassifier(**xgb_params)
+xgb.fit(X_train, y_train)
+y_pred = xgb.predict(X_test)
+
+print("\nXGBoost 评估结果:")
+evaluate_anomaly_detection(y_test, y_pred, "XGBoost")
+
+# SVC - 修改参数
+svc = SVC(
+    C=1.0,  # 增加C值
+    probability=True,
+    class_weight=class_weight_dict,  # 添加类别权重
+    kernel='rbf'  # 使用RBF核
+)
+svc.fit(X_train, y_train)
+y_pred = svc.predict(X_test)
+
+print("\nSVC 评估结果:")
+evaluate_anomaly_detection(y_test, y_pred, "SVC")
+
+# Logistic Regression - 修改参数
+lr = LogisticRegression(
+    class_weight=class_weight_dict,  # 添加类别权重
+    max_iter=1000,  # 增加最大迭代次数
+    C=1.0  # 调整正则化强度
+)
+lr.fit(X_train, y_train)
+y_pred = lr.predict(X_test)
+
+print("\nLogistic Regression 评估结果:")
+evaluate_anomaly_detection(y_test, y_pred, "Logistic Regression")
+
+# 打印类别分布情况
+print("\n训练集类别分布:")
+for i in range(3):
+    print(f"类别 {i}: {np.sum(y_train == i)} 样本")
+print("\n测试集类别分布:")
+for i in range(3):
+    print(f"类别 {i}: {np.sum(y_test == i)} 样本")
+
+# %%
