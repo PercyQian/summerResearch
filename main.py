@@ -829,6 +829,7 @@ from sklearn.model_selection import GridSearchCV
 from imblearn.over_sampling import SMOTE
 from imblearn.under_sampling import RandomUnderSampler
 from imblearn.pipeline import Pipeline as ImbPipeline
+from collections import Counter
 
 # %%
 com = loadDataByHour("8PM")
@@ -891,55 +892,54 @@ X = scaler.transform(com[rlf_features])
 
 X_train, X_test, y_train, y_test = train_test_split(X,com[outputs]["target_c"],test_size=0.2, shuffle=False)
 
-# 打印原始类别分布
-print("\n训练集原始类别分布:")
+# print original data distribution
+print("\nOriginal data distribution:")
 for i in range(3):
-    print(f"类别 {i}: {np.sum(y_train == i)} 样本")
+    print(f"Class {i}: {np.sum(y_train == i)} samples")
 
-# 创建采样策略
-# 使用字典指定目标样本数
+# create sampling strategy
 over = SMOTE(sampling_strategy={
-    1: 200,  # 增加正异常的样本数
-    2: 200   # 增加负异常的样本数
+    1: 200,  # increase positive anomaly samples
+    2: 200   # increase negative anomaly samples
 })
 under = RandomUnderSampler(sampling_strategy={
-    0: 300   # 增加正常样本的数量
+    0: 300   # Decrease normal samples
 })
 
-# RandomForest - 修改参数
+# RandomForest 
 rlf_params = {
-    'criterion': 'entropy',  # 使用信息熵作为分裂标准
+    'criterion': 'entropy',  # use information entropy as split criterion
     'min_samples_leaf': 2,
-    'n_estimators': 300,    # 增加树的数量
-    'max_depth': 20,        # 增加树的深度
+    'n_estimators': 300,    # increase number of trees
+    'max_depth': 20,        # increase tree depth
     'class_weight': 'balanced',
-    'min_samples_split': 5  # 添加最小分裂样本数
+    'min_samples_split': 5  # decrease minimum split samples
 }
 
-# 创建包含采样和模型的管道
+# create pipeline with sampling and model
 rlf_pipeline = ImbPipeline([
     ('over', over),
     ('under', under),
     ('classifier', RandomForestClassifier(**rlf_params))
 ])
 
-# 训练模型
+# train model
 rlf_pipeline.fit(X_train, y_train)
 y_pred = rlf_pipeline.predict(X_test)
 
-print("\nRandom Forest 评估结果:")
+print("\nRandom Forest evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "Random Forest")
 
-# XGBoost - 修改参数
+# XGBoost 
 xgb_params = {
     'colsample_bytree': 0.8,
-    'gamma': 0.1,           # 减小gamma值，使模型更容易分裂
-    'max_depth': 10,        # 增加树的深度
+    'gamma': 0.1,           # decrease gamma value, make model easier to split
+    'max_depth': 10,        # increase tree depth
     'min_child_weight': 1,
     'subsample': 0.8,
-    'scale_pos_weight': 20, # 增加正样本权重
-    'learning_rate': 0.05,  # 添加学习率
-    'n_estimators': 300     # 增加树的数量
+    'scale_pos_weight': 20, # increase positive samples weight
+    'learning_rate': 0.05,  # add learning rate
+    'n_estimators': 300     # increase number of trees
 }
 
 xgb_pipeline = ImbPipeline([
@@ -951,17 +951,17 @@ xgb_pipeline = ImbPipeline([
 xgb_pipeline.fit(X_train, y_train)
 y_pred = xgb_pipeline.predict(X_test)
 
-print("\nXGBoost 评估结果:")
+print("\nXGBoost evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "XGBoost")
 
-# SVC - 修改参数
+# SVC 
 svc_params = {
-    'C': 20.0,             # 增加C值，使决策边界更灵活
+    'C': 20.0,             # increase C value, make decision boundary more flexible
     'probability': True,
     'class_weight': 'balanced',
     'kernel': 'rbf',
     'gamma': 'scale',
-    'cache_size': 1000     # 增加缓存大小
+    'cache_size': 1000     # increase cache size
 }
 
 svc_pipeline = ImbPipeline([
@@ -973,16 +973,16 @@ svc_pipeline = ImbPipeline([
 svc_pipeline.fit(X_train, y_train)
 y_pred = svc_pipeline.predict(X_test)
 
-print("\nSVC 评估结果:")
+print("\nSVC evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "SVC")
 
-# Logistic Regression - 修改参数
+# Logistic Regression 
 lr_params = {
     'class_weight': 'balanced',
-    'max_iter': 3000,      # 增加最大迭代次数
-    'C': 20.0,             # 增加正则化强度的倒数
+    'max_iter': 3000,      # increase max iterations
+    'C': 20.0,             # increase regularization strength
     'solver': 'saga',
-    'tol': 1e-4            # 调整收敛容差
+    'tol': 1e-4            # adjust convergence tolerance
 }
 
 lr_pipeline = ImbPipeline([
@@ -994,18 +994,19 @@ lr_pipeline = ImbPipeline([
 lr_pipeline.fit(X_train, y_train)
 y_pred = lr_pipeline.predict(X_test)
 
-print("\nLogistic Regression 评估结果:")
+print("\nLogistic Regression evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "Logistic Regression")
 
-# 打印测试集分布
-print("\n测试集类别分布:")
+# print test set distribution
+print("\nTest set distribution:")
 for i in range(3):
-    print(f"类别 {i}: {np.sum(y_test == i)} 样本")
+    print(f"Class {i}: {np.sum(y_test == i)} samples")
 
-# 打印采样后的训练集分布
-y_train_resampled = rlf_pipeline.named_steps['classifier'].predict(X_train)
-print("\n采样后的训练集类别分布:")
-for i in range(3):
-    print(f"类别 {i}: {np.sum(y_train_resampled == i)} 样本")
+# first do SMOTE oversampling
+X_over, y_over = over.fit_resample(X_train, y_train)
+# then do undersampling
+X_res, y_res = under.fit_resample(X_over, y_over)
 
+print("Data used for training after sampling:")
+print(Counter(y_res))
 # %%
