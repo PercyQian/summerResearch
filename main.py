@@ -835,7 +835,10 @@ from imblearn.under_sampling import RandomUnderSampler
 from imblearn.pipeline import Pipeline as ImbPipeline
 from imblearn.over_sampling import ADASYN #try adasyn for harder sample1
 from collections import Counter
+from sklearn.inspection import permutation_importance
+from sklearn.metrics import precision_recall_curve
 
+# %%
 # Load data
 com = loadDataByHour("8PM")
 total_lmp_delta(com)
@@ -846,26 +849,58 @@ com['lagged_lmp_rt'] = com['total_lmp_rt'].shift(1)
 com['lagged_delta'] = com['total_lmp_delta'].shift(1)
 com.dropna(inplace=True)
 
+# %%
 def plot_features(model):
     model.fit(X_train, y_train)
     feature_importance = dict(zip(inputs, model.feature_importances_))
     return feature_importance
 
-inputs = com.describe().columns[:-2]
-rlf_features = plot_features(RandomForestClassifier())
-rlf_features = [i for i in rlf_features.keys() if rlf_features[i] > 0]
+#%%
+# Add holiday feature
+def applyHoliday(data: pd.DataFrame, holidays: list[dict]) -> pd.DataFrame:
+    mapping = {1: "monday", 2: "tuesday", 3: "wednesday", 4: "thursday", 5: "friday", 6: "saturday", 7: "sunday"}
+    data['isHoliday'] = 0
+    for item in holidays:
+        month, day, occurrence, startYear = item['month'], item['date'], item['occurence'], item['startYear']
+        occurrence_match = 1
+        for index, row in data.iterrows():
+            current_month = int(row["datetime_beginning_utc"].split(" ")[0].split("/")[0])
+            current_day = int(row["datetime_beginning_utc"].split(" ")[0].split("/")[1])
+            current_year = int(row["datetime_beginning_utc"].split(" ")[0].split("/")[2])
+            if current_month == month and startYear <= current_year:
+                try:
+                    if current_day == int(day):
+                        data.loc[index, "isHoliday"] = 1
+                except:
+                    if mapping[pd.to_datetime(f"{current_year}-{current_month}-{current_day}").isocalendar().weekday] == day:
+                        if occurrence_match == occurrence:
+                            data.loc[index, "isHoliday"] = 1
+                            occurrence_match = 1
+                        else:
+                            occurrence_match += 1
+    return data
 
+com = applyHoliday(com, holidays)
+print("After applyHoliday, columns:", com.columns.tolist())
+# %%
+inputs = [
+    'total_lmp_delta', 'lagged_lmp_da', 'lagged_lmp_rt', 'lagged_delta',
+    'apparent_temperature (°C)', 'wind_gusts_10m (km/h)', 'pressure_msl (hPa)',
+    'soil_temperature_0_to_7cm (°C)', 'soil_moisture_0_to_7cm (m³/m³)',
+    'system_energy_price_rt', 'total_lmp_rt', 'isHoliday'
+]
+scaler = StandardScaler()
+scaler.fit(com[inputs])
+X = scaler.transform(com[inputs])
+y = com['target_c']
 outputs = com.describe().columns[-2:]
 
 
-# Scale features
-scaler = StandardScaler()
-scaler.fit(com[rlf_features])
-X = scaler.transform(com[rlf_features])
 
 # Split data
 X_train, X_test, y_train, y_test = train_test_split(X, com['target_c'], test_size=0.2, shuffle=False)
 
+# %%
 # Print original data distribution
 print("\nOriginal data distribution:")
 for i in range(3):
@@ -881,6 +916,7 @@ X_res, y_res = resampling_pipeline.fit_resample(X_train, y_train)
 print("Data used for training after sampling:")
 print(Counter(y_res))
 
+# %%
 # RandomForest
 rlf_params = {
     'criterion': 'entropy',
@@ -940,11 +976,12 @@ y_pred = svc_pipeline.predict(X_test)
 print("\nSVC evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "SVC")
 
+# %%
 # Logistic Regression
 lr_params = {
-    'class_weight': 'balanced',
-    'max_iter': 3000,
-    'C': 50.0,
+    'class_weight': {0: 1, 1: 8},
+    'max_iter': 2000,
+    'C': 5.0,
     'solver': 'saga',
     'tol': 1e-4
 }
@@ -955,9 +992,23 @@ lr_pipeline = ImbPipeline([
 ])
 lr_pipeline.fit(X_train, y_train)
 y_pred = lr_pipeline.predict(X_test)
+y_scores = lr_pipeline.predict_proba(X_test)[:, 1] if hasattr(lr_pipeline, 'predict_proba') else lr_pipeline.decision_function(X_test)
+precision, recall, thresholds = precision_recall_curve(y_test, y_scores)
+threshold = thresholds[np.argmax(recall >= 0.7)] if np.any(recall >= 0.7) else thresholds[-1]  # Target recall ~0.7
+y_pred = (y_scores >= threshold).astype(int)
 print("\nLogistic Regression evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "Logistic Regression")
+coefs = lr_pipeline.named_steps['classifier'].coef_[0]
+indices = np.argsort(np.abs(coefs))[::-1]
+plt.figure(figsize=(12, 6))
+plt.barh(np.array(inputs)[indices], coefs[indices], color='teal')
+plt.xlabel("Coefficient")
+plt.title("Logistic Regression Feature Coefficients")
+plt.gca().invert_yaxis()
+plt.show()
 
+
+# %%
 # Print test set distribution
 print("\nTest set distribution:")
 for i in range(3):
@@ -966,5 +1017,8 @@ for i in range(3):
 X_over, y_over = over.fit_resample(X_train, y_train)
 # then do undersampling
 X_res, y_res = under.fit_resample(X_over, y_over)
+
+
+# %%
 
 # %%
