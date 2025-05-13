@@ -835,8 +835,8 @@ from imblearn.under_sampling import RandomUnderSampler
 from imblearn.pipeline import Pipeline as ImbPipeline
 from imblearn.over_sampling import ADASYN #try adasyn for harder sample1
 from collections import Counter
-from sklearn.inspection import permutation_importance
-from sklearn.metrics import precision_recall_curve
+from sklearn.model_selection import GridSearchCV
+
 
 # %%
 # Load data
@@ -855,30 +855,6 @@ def plot_features(model):
     feature_importance = dict(zip(inputs, model.feature_importances_))
     return feature_importance
 
-#%%
-# Add holiday feature
-def applyHoliday(data: pd.DataFrame, holidays: list[dict]) -> pd.DataFrame:
-    mapping = {1: "monday", 2: "tuesday", 3: "wednesday", 4: "thursday", 5: "friday", 6: "saturday", 7: "sunday"}
-    data['isHoliday'] = 0
-    for item in holidays:
-        month, day, occurrence, startYear = item['month'], item['date'], item['occurence'], item['startYear']
-        occurrence_match = 1
-        for index, row in data.iterrows():
-            current_month = int(row["datetime_beginning_utc"].split(" ")[0].split("/")[0])
-            current_day = int(row["datetime_beginning_utc"].split(" ")[0].split("/")[1])
-            current_year = int(row["datetime_beginning_utc"].split(" ")[0].split("/")[2])
-            if current_month == month and startYear <= current_year:
-                try:
-                    if current_day == int(day):
-                        data.loc[index, "isHoliday"] = 1
-                except:
-                    if mapping[pd.to_datetime(f"{current_year}-{current_month}-{current_day}").isocalendar().weekday] == day:
-                        if occurrence_match == occurrence:
-                            data.loc[index, "isHoliday"] = 1
-                            occurrence_match = 1
-                        else:
-                            occurrence_match += 1
-    return data
 
 com = applyHoliday(com, holidays)
 print("After applyHoliday, columns:", com.columns.tolist())
@@ -978,10 +954,14 @@ evaluate_anomaly_detection(y_test, y_pred, "SVC")
 
 # %%
 # Logistic Regression
+param_grid = {
+    'classifier__C': [0.1, 0.5, 1, 5, 10],
+    'classifier__class_weight': ['balanced', {0:1, 1:2}, {0:1, 1:4}, {0:1, 1:8}]
+}
 lr_params = {
-    'class_weight': {0: 1, 1: 8},
+    'class_weight': 'balanced',
     'max_iter': 2000,
-    'C': 5.0,
+    'C': 0.1,
     'solver': 'saga',
     'tol': 1e-4
 }
@@ -990,14 +970,15 @@ lr_pipeline = ImbPipeline([
     ('under', under),
     ('classifier', LogisticRegression(**lr_params))
 ])
+#use gird to find best params
+grid = GridSearchCV(lr_pipeline, param_grid, scoring='f1_macro', cv=5)
+grid.fit(X_train, y_train)
+print("Best params:", grid.best_params_)
 lr_pipeline.fit(X_train, y_train)
 y_pred = lr_pipeline.predict(X_test)
-y_scores = lr_pipeline.predict_proba(X_test)[:, 1] if hasattr(lr_pipeline, 'predict_proba') else lr_pipeline.decision_function(X_test)
-precision, recall, thresholds = precision_recall_curve(y_test, y_scores)
-threshold = thresholds[np.argmax(recall >= 0.7)] if np.any(recall >= 0.7) else thresholds[-1]  # Target recall ~0.7
-y_pred = (y_scores >= threshold).astype(int)
 print("\nLogistic Regression evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "Logistic Regression")
+'''
 coefs = lr_pipeline.named_steps['classifier'].coef_[0]
 indices = np.argsort(np.abs(coefs))[::-1]
 plt.figure(figsize=(12, 6))
@@ -1005,7 +986,7 @@ plt.barh(np.array(inputs)[indices], coefs[indices], color='teal')
 plt.xlabel("Coefficient")
 plt.title("Logistic Regression Feature Coefficients")
 plt.gca().invert_yaxis()
-plt.show()
+plt.show()'''
 
 
 # %%
