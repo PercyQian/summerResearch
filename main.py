@@ -883,7 +883,7 @@ for i in range(3):
     print(f"Class {i}: {np.sum(y_train == i)} samples")
 
 # Create sampling strategy
-over = ADASYN(sampling_strategy={1: 400})
+over = ADASYN(sampling_strategy={1: 200},random_state=42)
 under = RandomUnderSampler(sampling_strategy={0: 300})
 
 # Resampling pipeline for inspection
@@ -912,6 +912,7 @@ y_pred = rlf_pipeline.predict(X_test)
 print("\nRandom Forest evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "Random Forest")
 
+# %%
 # XGBoost
 xgb_params = {
     'colsample_bytree': 0.8,
@@ -933,6 +934,7 @@ y_pred = xgb_pipeline.predict(X_test)
 print("\nXGBoost evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "XGBoost")
 
+# %%
 # SVC
 svc_params = {
     'C': 1.0,
