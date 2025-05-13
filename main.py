@@ -449,36 +449,36 @@ def combineDataFrames(lmpData : pd.DataFrame, weatherData: pd.DataFrame) -> pd.D
 
 
 # %%
-def total_lmp_delta(data : pd.DataFrame) -> None: 
-    data['total_lmp_delta']  = 0
-    for  i in list(data.index):
-        data.loc[i, "total_lmp_delta"] = data.loc[i, "total_lmp_da"] - data.loc[i, "total_lmp_rt"]
-
+# modified total lmp delta of relative deviation |(a - r) / a|
+def total_lmp_delta(data: pd.DataFrame) -> None:
+    data['total_lmp_delta'] = 0
+    for i in list(data.index):
+        a = data.loc[i, "total_lmp_da"]
+        r = data.loc[i, "total_lmp_rt"]
+        # Compute relative deviation: |(a - r) / a|, handle division by zero
+        if abs(a) < 1e-6:  # If a is close to zero, use a small constant
+            a = 1e-6
+        data.loc[i, "total_lmp_delta"] = abs((a - r) / a)
 # %%
-def addTarget(df : pd.DataFrame)->None:
+def addTarget(df: pd.DataFrame) -> None:
+    if 'total_lmp_delta' not in df.columns:
+        raise ValueError("'total_lmp_delta' column is missing")
+    if df['total_lmp_delta'].isna().any():
+        raise ValueError("NaN values found in 'total_lmp_delta'")
+    
     num = len(df['total_lmp_delta'])
     top_5_percent_index = num * 0.95
-    bottom_95_percent_index = num * 0.05
-
-    min_5 = sorted(df['total_lmp_delta'])[:int(bottom_95_percent_index)][-1]
-    max_5 = sorted(df['total_lmp_delta'])[int(top_5_percent_index):][0]
-
-    df['target_c'] = 0
-
-    # Can also just classify outliers as 1, instead of separating into positive and negative
-    for i in list(reversed(df.index)):
-
-        if df['total_lmp_delta'][i] <= min_5:
-            df.loc[i,'target_c'] = 2
-        elif df['total_lmp_delta'][i] >= max_5:
-            df.loc[i,'target_c'] = 1
-        else: 
-            df.loc[i,'target_c'] = 0
-
+    max_5 = sorted(df['total_lmp_delta'])[int(top_5_percent_index)]
+    
+    # Vectorized assignment
+    df['target_c'] = (df['total_lmp_delta'] >= max_5).astype(int)
+    
     df['target_c'] = df['target_c'].shift(-1)
     df['target_r'] = df['total_lmp_delta'].shift(-1)
     df.dropna(inplace=True)
-
+    
+    print("After addTarget, target_c value counts:\n", df['target_c'].value_counts())
+    print("After addTarget, columns:", df.columns.tolist())
 # %%
 # Do 8AM and 8PM
 
@@ -823,190 +823,148 @@ from sklearn.model_selection import GridSearchCV
 # KNeighborsClassifier, Xgboost, LightGBM, 
 
 # %%
+from sklearn.metrics import classification_report
 
+def evaluate_anomaly_detection(y_true, y_pred, model_name):
+    print(f"{model_name} detection results:")
+    print(classification_report(y_true, y_pred, target_names=['normal', 'large relative deviation'], zero_division=0))
 
 # %%
 from imblearn.over_sampling import SMOTE
 from imblearn.under_sampling import RandomUnderSampler
 from imblearn.pipeline import Pipeline as ImbPipeline
+from imblearn.over_sampling import ADASYN #try adasyn for harder sample1
 from collections import Counter
 
-# %%
+# Load data
 com = loadDataByHour("8PM")
+total_lmp_delta(com)
+addTarget(com)
+#add lagged features
+com['lagged_lmp_da'] = com['total_lmp_da'].shift(1)
+com['lagged_lmp_rt'] = com['total_lmp_rt'].shift(1)
+com['lagged_delta'] = com['total_lmp_delta'].shift(1)
+com.dropna(inplace=True)
 
-
-inputs = (com.describe().columns[:-2])
-outputs = (com.describe().columns[-2:])
-
-# %%
-def plot_features(model, model_params = None) ->list:
-    com = loadDataByHour("8PM")
-    inputs = (com.describe().columns[:-2])
-    outputs = (com.describe().columns[-2:])
-
-    scaler = StandardScaler()
-    scaler.fit(com[inputs])
-    X = scaler.transform(com[inputs])
-
-    X_train, X_test, y_train, y_test = train_test_split(X, com[outputs]["target_c"], test_size=0.2, shuffle=False)
-
+def plot_features(model):
     model.fit(X_train, y_train)
+    feature_importance = dict(zip(inputs, model.feature_importances_))
+    return feature_importance
 
-    r = permutation_importance(model, X_train, y_train, n_repeats=1, random_state=42)
-
-    features = []
-    values = []
-
-    for i in r.importances_mean.argsort()[::-1]:
-        print(f"{inputs[i]:<30} importance: {r.importances_mean[i]:.5f} +/- {r.importances_std[i]:.5f}" )
-        features.append(inputs[i])
-        values.append(r.importances_mean[i])
-
-    fig, ax = plt.subplots()
-    fig.set_figheight(12)
-    fig.set_figwidth(16)
-    y_pos = np.arange(len(features))
-
-    ax.barh(y_pos,values,align="center",color ='maroon')
-    ax.set_yticks(y_pos,labels=features)
-    ax.invert_yaxis() 
-
-    ax.set_xlabel("Features")
-    ax.set_ylabel("Feature Importance")
-    ax.set_title("Importance of Features on target")
-    plt.show()
-
-    return dict(zip(features, values))
-
-# %%
+inputs = com.describe().columns[:-2]
 rlf_features = plot_features(RandomForestClassifier())
+rlf_features = [i for i in rlf_features.keys() if rlf_features[i] > 0]
 
-# %%
-rlf_features = [i for i in list(rlf_features.keys()) if rlf_features[i] > 0]
+outputs = com.describe().columns[-2:]
 
 
+# Scale features
 scaler = StandardScaler()
 scaler.fit(com[rlf_features])
 X = scaler.transform(com[rlf_features])
 
+# Split data
+X_train, X_test, y_train, y_test = train_test_split(X, com['target_c'], test_size=0.2, shuffle=False)
 
-X_train, X_test, y_train, y_test = train_test_split(X,com[outputs]["target_c"],test_size=0.2, shuffle=False)
-
-# print original data distribution
+# Print original data distribution
 print("\nOriginal data distribution:")
 for i in range(3):
     print(f"Class {i}: {np.sum(y_train == i)} samples")
 
-# create sampling strategy
-over = SMOTE(sampling_strategy={
-    1: 200,  # increase positive anomaly samples
-    2: 200   # increase negative anomaly samples
-})
-under = RandomUnderSampler(sampling_strategy={
-    0: 300   # Decrease normal samples
-})
+# Create sampling strategy
+over = ADASYN(sampling_strategy={1: 400})
+under = RandomUnderSampler(sampling_strategy={0: 300})
 
-# RandomForest 
+# Resampling pipeline for inspection
+resampling_pipeline = ImbPipeline([('over', over), ('under', under)])
+X_res, y_res = resampling_pipeline.fit_resample(X_train, y_train)
+print("Data used for training after sampling:")
+print(Counter(y_res))
+
+# RandomForest
 rlf_params = {
-    'criterion': 'entropy',  # use information entropy as split criterion
+    'criterion': 'entropy',
     'min_samples_leaf': 2,
-    'n_estimators': 300,    # increase number of trees
-    'max_depth': 20,        # increase tree depth
+    'n_estimators': 300,
+    'max_depth': 20,
     'class_weight': 'balanced',
-    'min_samples_split': 5  # decrease minimum split samples
+    'min_samples_split': 5
 }
-
-# create pipeline with sampling and model
 rlf_pipeline = ImbPipeline([
     ('over', over),
     ('under', under),
     ('classifier', RandomForestClassifier(**rlf_params))
 ])
-
-# train model
 rlf_pipeline.fit(X_train, y_train)
 y_pred = rlf_pipeline.predict(X_test)
-
 print("\nRandom Forest evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "Random Forest")
 
-# XGBoost 
+# XGBoost
 xgb_params = {
     'colsample_bytree': 0.8,
-    'gamma': 0.1,           # decrease gamma value, make model easier to split
-    'max_depth': 10,        # increase tree depth
+    'gamma': 0.1,
+    'max_depth': 10,
     'min_child_weight': 1,
     'subsample': 0.8,
-    'scale_pos_weight': 20, # increase positive samples weight
-    'learning_rate': 0.05,  # add learning rate
-    'n_estimators': 300     # increase number of trees
+    'scale_pos_weight': 50,
+    'learning_rate': 0.05,
+    'n_estimators': 300
 }
-
 xgb_pipeline = ImbPipeline([
     ('over', over),
     ('under', under),
     ('classifier', XGBClassifier(**xgb_params))
 ])
-
 xgb_pipeline.fit(X_train, y_train)
 y_pred = xgb_pipeline.predict(X_test)
-
 print("\nXGBoost evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "XGBoost")
 
-# SVC 
+# SVC
 svc_params = {
-    'C': 20.0,             # increase C value, make decision boundary more flexible
+    'C': 1.0,
     'probability': True,
     'class_weight': 'balanced',
     'kernel': 'rbf',
     'gamma': 'scale',
-    'cache_size': 1000     # increase cache size
+    'cache_size': 1000
 }
-
 svc_pipeline = ImbPipeline([
     ('over', over),
     ('under', under),
     ('classifier', SVC(**svc_params))
 ])
-
 svc_pipeline.fit(X_train, y_train)
 y_pred = svc_pipeline.predict(X_test)
-
 print("\nSVC evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "SVC")
 
-# Logistic Regression 
+# Logistic Regression
 lr_params = {
     'class_weight': 'balanced',
-    'max_iter': 3000,      # increase max iterations
-    'C': 20.0,             # increase regularization strength
+    'max_iter': 3000,
+    'C': 50.0,
     'solver': 'saga',
-    'tol': 1e-4            # adjust convergence tolerance
+    'tol': 1e-4
 }
-
 lr_pipeline = ImbPipeline([
     ('over', over),
     ('under', under),
     ('classifier', LogisticRegression(**lr_params))
 ])
-
 lr_pipeline.fit(X_train, y_train)
 y_pred = lr_pipeline.predict(X_test)
-
 print("\nLogistic Regression evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "Logistic Regression")
 
-# print test set distribution
+# Print test set distribution
 print("\nTest set distribution:")
 for i in range(3):
     print(f"Class {i}: {np.sum(y_test == i)} samples")
-
 # first do SMOTE oversampling
 X_over, y_over = over.fit_resample(X_train, y_train)
 # then do undersampling
 X_res, y_res = under.fit_resample(X_over, y_over)
 
-print("Data used for training after sampling:")
-print(Counter(y_res))
 # %%
