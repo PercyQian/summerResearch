@@ -830,15 +830,6 @@ def evaluate_anomaly_detection(y_true, y_pred, model_name):
     print(classification_report(y_true, y_pred, target_names=['normal', 'large relative deviation'], zero_division=0))
 
 # %%
-from imblearn.over_sampling import SMOTE
-from imblearn.under_sampling import RandomUnderSampler
-from imblearn.pipeline import Pipeline as ImbPipeline
-from imblearn.over_sampling import ADASYN #try adasyn for harder sample1
-from collections import Counter
-from sklearn.model_selection import GridSearchCV
-
-
-# %%
 # Load data
 com = loadDataByHour("8PM")
 total_lmp_delta(com)
@@ -848,13 +839,6 @@ com['lagged_lmp_da'] = com['total_lmp_da'].shift(1)
 com['lagged_lmp_rt'] = com['total_lmp_rt'].shift(1)
 com['lagged_delta'] = com['total_lmp_delta'].shift(1)
 com.dropna(inplace=True)
-
-# %%
-def plot_features(model):
-    model.fit(X_train, y_train)
-    feature_importance = dict(zip(inputs, model.feature_importances_))
-    return feature_importance
-
 
 com = applyHoliday(com, holidays)
 print("After applyHoliday, columns:", com.columns.tolist())
@@ -871,26 +855,13 @@ X = scaler.transform(com[inputs])
 y = com['target_c']
 outputs = com.describe().columns[-2:]
 
-
-
 # Split data
-X_train, X_test, y_train, y_test = train_test_split(X, com['target_c'], test_size=0.2, shuffle=False)
+X_train, X_test, y_train, y_test = train_test_split(X, com['target_c'], test_size=0.2, shuffle=True, stratify=y, random_state=42)
 
-# %%
 # Print original data distribution
 print("\nOriginal data distribution:")
 for i in range(3):
     print(f"Class {i}: {np.sum(y_train == i)} samples")
-
-# Create sampling strategy
-over = ADASYN(sampling_strategy={1: 200},random_state=42)
-under = RandomUnderSampler(sampling_strategy={0: 300})
-
-# Resampling pipeline for inspection
-resampling_pipeline = ImbPipeline([('over', over), ('under', under)])
-X_res, y_res = resampling_pipeline.fit_resample(X_train, y_train)
-print("Data used for training after sampling:")
-print(Counter(y_res))
 
 # %%
 # RandomForest
@@ -902,13 +873,9 @@ rlf_params = {
     'class_weight': 'balanced',
     'min_samples_split': 5
 }
-rlf_pipeline = ImbPipeline([
-    ('over', over),
-    ('under', under),
-    ('classifier', RandomForestClassifier(**rlf_params))
-])
-rlf_pipeline.fit(X_train, y_train)
-y_pred = rlf_pipeline.predict(X_test)
+rf = RandomForestClassifier(**rlf_params)
+rf.fit(X_train, y_train)
+y_pred = rf.predict(X_test)
 print("\nRandom Forest evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "Random Forest")
 
@@ -924,13 +891,9 @@ xgb_params = {
     'learning_rate': 0.05,
     'n_estimators': 300
 }
-xgb_pipeline = ImbPipeline([
-    ('over', over),
-    ('under', under),
-    ('classifier', XGBClassifier(**xgb_params))
-])
-xgb_pipeline.fit(X_train, y_train)
-y_pred = xgb_pipeline.predict(X_test)
+xgb = XGBClassifier(**xgb_params)
+xgb.fit(X_train, y_train)
+y_pred = xgb.predict(X_test)
 print("\nXGBoost evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "XGBoost")
 
@@ -944,64 +907,32 @@ svc_params = {
     'gamma': 'scale',
     'cache_size': 1000
 }
-svc_pipeline = ImbPipeline([
-    ('over', over),
-    ('under', under),
-    ('classifier', SVC(**svc_params))
-])
-svc_pipeline.fit(X_train, y_train)
-y_pred = svc_pipeline.predict(X_test)
+svc = SVC(**svc_params)
+svc.fit(X_train, y_train)
+y_pred = svc.predict(X_test)
 print("\nSVC evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "SVC")
 
 # %%
 # Logistic Regression
 param_grid = {
-    'classifier__C': [0.1, 0.5, 1, 5, 10],
-    'classifier__class_weight': ['balanced', {0:1, 1:2}, {0:1, 1:4}, {0:1, 1:8}]
+    'C': [0.1, 0.5, 1, 5, 10],
+    'class_weight': ['balanced', {0:1, 1:2}, {0:1, 1:4}, {0:1, 1:8}]
 }
-lr_params = {
-    'class_weight': 'balanced',
-    'max_iter': 2000,
-    'C': 0.1,
-    'solver': 'saga',
-    'tol': 1e-4
-}
-lr_pipeline = ImbPipeline([
-    ('over', over),
-    ('under', under),
-    ('classifier', LogisticRegression(**lr_params))
-])
-#use gird to find best params
-grid = GridSearchCV(lr_pipeline, param_grid, scoring='f1_macro', cv=5)
+lr = LogisticRegression(max_iter=2000, solver='saga', tol=1e-4)
+grid = GridSearchCV(lr, param_grid, scoring='f1_macro', cv=5)
 grid.fit(X_train, y_train)
 print("Best params:", grid.best_params_)
-lr_pipeline.fit(X_train, y_train)
-y_pred = lr_pipeline.predict(X_test)
+best_lr = grid.best_estimator_
+y_pred = best_lr.predict(X_test)
 print("\nLogistic Regression evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "Logistic Regression")
-'''
-coefs = lr_pipeline.named_steps['classifier'].coef_[0]
-indices = np.argsort(np.abs(coefs))[::-1]
-plt.figure(figsize=(12, 6))
-plt.barh(np.array(inputs)[indices], coefs[indices], color='teal')
-plt.xlabel("Coefficient")
-plt.title("Logistic Regression Feature Coefficients")
-plt.gca().invert_yaxis()
-plt.show()'''
-
 
 # %%
 # Print test set distribution
 print("\nTest set distribution:")
 for i in range(3):
     print(f"Class {i}: {np.sum(y_test == i)} samples")
-# first do SMOTE oversampling
-X_over, y_over = over.fit_resample(X_train, y_train)
-# then do undersampling
-X_res, y_res = under.fit_resample(X_over, y_over)
-
 
 # %%
-
 # %%
