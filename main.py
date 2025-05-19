@@ -980,7 +980,8 @@ X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, shuffle=True, stratify=y, random_state=42
 )
 
-# 5. train and evaluate model (RandomForest as an example)
+# %%
+# train and evaluate model (RF)
 rf = RandomForestClassifier(
     criterion='entropy',
     min_samples_leaf=2,
@@ -994,3 +995,53 @@ y_pred = rf.predict(X_test)
 evaluate_anomaly_detection(y_test, y_pred, "Random Forest")
 
 # %%
+# train and evaluate model (XGBoost)
+xgb_params = {
+    'colsample_bytree': 0.8,
+    'gamma': 0.1,
+    'max_depth': 10,
+    'min_child_weight': 1,
+    'subsample': 0.8,
+    'scale_pos_weight': 50,
+    'learning_rate': 0.05,
+    'n_estimators': 300
+}
+xgb = XGBClassifier(**xgb_params)
+xgb.fit(X_train, y_train)
+y_pred = xgb.predict(X_test)
+print("\nXGBoost evaluation results:")
+evaluate_anomaly_detection(y_test, y_pred, "XGBoost")
+
+# %%
+# train and evaluate model (SVC)
+svc_params = {
+    'C': 1.0,
+    'probability': True,
+    'class_weight': 'balanced',
+    'kernel': 'rbf',
+    'gamma': 'scale',
+    'cache_size': 1000
+}
+svc = SVC(**svc_params)
+svc.fit(X_train, y_train)
+y_pred = svc.predict(X_test)
+print("\nSVC evaluation results:")
+evaluate_anomaly_detection(y_test, y_pred, "SVC")
+
+# %%
+# train and evaluate model (Logistic Regression)
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV
+
+param_grid = {
+    'C': [0.1, 0.5, 1, 5, 10],
+    'class_weight': ['balanced', {0:1, 1:2}, {0:1, 1:4}, {0:1, 1:8}]
+}
+lr = LogisticRegression(max_iter=2000, solver='saga', tol=1e-4)
+grid = GridSearchCV(lr, param_grid, scoring='f1_macro', cv=5)
+grid.fit(X_train, y_train)
+print("Best params:", grid.best_params_)
+best_lr = grid.best_estimator_
+y_pred = best_lr.predict(X_test)
+print("\nLogistic Regression evaluation results:")
+evaluate_anomaly_detection(y_test, y_pred, "Logistic Regression")
