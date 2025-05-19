@@ -935,6 +935,7 @@ for i in range(3):
     print(f"Class {i}: {np.sum(y_test == i)} samples")
 
 # %%
+# 5.19.2025 Use all hours data to train and evaluate model
 import os
 
 # 1. merge all data from all hours
@@ -1045,3 +1046,5 @@ best_lr = grid.best_estimator_
 y_pred = best_lr.predict(X_test)
 print("\nLogistic Regression evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "Logistic Regression")
+
+# %%
