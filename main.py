@@ -937,7 +937,7 @@ for i in range(3):
 # %%
 import os
 
-# 1. 合并所有小时的数据
+# 1. merge all data from all hours
 all_coms = []
 LMP_PATH = "hourlyLmpData/westernData"
 WEATHER_PATH = "hourlyWeatherData/openMeteo"
@@ -947,8 +947,10 @@ for items in os.listdir(LMP_PATH):
     hold[0] = "weather"
     weather_file = "_".join(hold)
     weather = pd.read_pickle(os.path.join(WEATHER_PATH, weather_file))
+    hour = hold[2].replace(".csv", "")
     com = combineDataFrames(lmp, weather)
     com = applyHoliday(com, holidays)
+    com['hour'] = hour
     total_lmp_delta(com)
     addTarget(com)
     com['lagged_lmp_da'] = com['total_lmp_da'].shift(1)
@@ -957,28 +959,28 @@ for items in os.listdir(LMP_PATH):
     com.dropna(inplace=True)
     all_coms.append(com)
 
-# 2. 合并所有小时的数据
+# 2. merge all data from all hours
 all_data = pd.concat(all_coms, axis=0, ignore_index=True)
-
-# 3. 特征和标签
+all_data = pd.get_dummies(all_data, columns=['hour']) #one-hot encoding hour
+# 3. features and labels
 inputs = [
     'total_lmp_delta', 'lagged_lmp_da', 'lagged_lmp_rt', 'lagged_delta',
     'apparent_temperature (°C)', 'wind_gusts_10m (km/h)', 'pressure_msl (hPa)',
     'soil_temperature_0_to_7cm (°C)', 'soil_moisture_0_to_7cm (m³/m³)',
     'system_energy_price_rt', 'total_lmp_rt', 'isHoliday'
-]
+]+ [col for col in all_data.columns if col.startswith('hour_')]
 scaler = StandardScaler()
 scaler.fit(all_data[inputs])
 X = scaler.transform(all_data[inputs])
 y = all_data['target_c']
 
-# 4. 划分训练集和测试集
+# 4. split data into training and testing
 from sklearn.model_selection import train_test_split
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, shuffle=True, stratify=y, random_state=42
 )
 
-# 5. 训练和评估模型（以RandomForest为例）
+# 5. train and evaluate model (RandomForest as an example)
 rf = RandomForestClassifier(
     criterion='entropy',
     min_samples_leaf=2,
@@ -991,5 +993,4 @@ rf.fit(X_train, y_train)
 y_pred = rf.predict(X_test)
 evaluate_anomaly_detection(y_test, y_pred, "Random Forest")
 
-# 你可以继续用XGBoost、SVC、LogisticRegression等模型同样方式训练和评估
 # %%
