@@ -960,16 +960,28 @@ for items in os.listdir(LMP_PATH):
     com.dropna(inplace=True)
     all_coms.append(com)
 
+
 # 2. merge all data from all hours
 all_data = pd.concat(all_coms, axis=0, ignore_index=True)
 all_data = pd.get_dummies(all_data, columns=['hour']) #one-hot encoding hour
 # 3. features and labels
+k = 3  # try small k first
+
+for i in range(1, k+1):
+    all_data[f'total_lmp_da_lag_{i}'] = all_data['total_lmp_da'].shift(i)
+
+all_data = all_data.dropna().reset_index(drop=True)
+
 inputs = [
     'total_lmp_delta', 'lagged_lmp_da', 'lagged_lmp_rt', 'lagged_delta',
     'apparent_temperature (°C)', 'wind_gusts_10m (km/h)', 'pressure_msl (hPa)',
     'soil_temperature_0_to_7cm (°C)', 'soil_moisture_0_to_7cm (m³/m³)',
     'system_energy_price_rt', 'total_lmp_rt', 'isHoliday'
-]+ [col for col in all_data.columns if col.startswith('hour_')]
+] + [f'total_lmp_da_lag_{i}' for i in range(1, k+1)]
+
+# add hour one-hot encoding
+inputs += [col for col in all_data.columns if col.startswith('hour_')]
+
 scaler = StandardScaler()
 scaler.fit(all_data[inputs])
 X = scaler.transform(all_data[inputs])
@@ -982,6 +994,32 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # %%
+from sklearn.metrics import precision_recall_curve
+def find_optimal_threshold(y_test, y_pred_proba):
+    # 1. calculate precision and recall at different thresholds
+    precisions, recalls, thresholds = precision_recall_curve(y_test, y_pred_proba[:, 1])
+    
+    # 2. 计算F1分数
+    f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
+    
+    # 3. 找到最佳F1分数对应的阈值
+    optimal_threshold = thresholds[np.argmax(f1_scores)]
+    
+    # 4. 可视化
+    plt.figure(figsize=(10, 6))
+    plt.plot(thresholds, precisions[:-1], label='Precision')
+    plt.plot(thresholds, recalls[:-1], label='Recall')
+    plt.plot(thresholds, f1_scores[:-1], label='F1-score')
+    plt.axvline(x=optimal_threshold, color='r', linestyle='--', label=f'Optimal threshold: {optimal_threshold:.2f}')
+    plt.xlabel('Threshold')
+    plt.ylabel('Score')
+    plt.title('Metrics vs. Threshold')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+    return optimal_threshold
+# %%
 # train and evaluate model (RF)
 rf = RandomForestClassifier(
     criterion='entropy',
@@ -992,8 +1030,31 @@ rf = RandomForestClassifier(
     min_samples_split=5
 )
 rf.fit(X_train, y_train)
-y_pred = rf.predict(X_test)
-evaluate_anomaly_detection(y_test, y_pred, "Random Forest")
+y_pred_proba = rf.predict_proba(X_test)
+optimal_threshold = find_optimal_threshold(y_test, y_pred_proba)
+y_pred = (y_pred_proba[:, 1] >= optimal_threshold).astype(int)
+print("\n使用最优阈值的结果：")
+evaluate_anomaly_detection(y_test, y_pred_optimal, "Random Forest")
+
+# %%
+import matplotlib.pyplot as plt
+import numpy as np
+
+importances = rf.feature_importances_
+indices = np.argsort(importances)[::-1]
+feature_names = np.array(inputs)
+
+plt.figure(figsize=(12, 6))
+plt.barh(feature_names[indices], importances[indices], color='maroon')
+plt.xlabel("Feature Importance")
+plt.title("Random Forest Feature Importances")
+plt.gca().invert_yaxis()
+plt.show()
+
+# print top 10 features
+for i in indices[:10]:
+    print(f"{feature_names[i]}: {importances[i]:.4f}")
+
 
 # %%
 # train and evaluate model (XGBoost)
@@ -1013,6 +1074,25 @@ y_pred = xgb.predict(X_test)
 print("\nXGBoost evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "XGBoost")
 
+# %%
+import matplotlib.pyplot as plt
+import numpy as np
+
+# 以RandomForest为例
+importances = xgb.feature_importances_
+indices = np.argsort(importances)[::-1]
+feature_names = np.array(inputs)
+
+plt.figure(figsize=(12, 6))
+plt.barh(feature_names[indices], importances[indices], color='maroon')
+plt.xlabel("Feature Importance")
+plt.title("XGBoost Feature Importances")
+plt.gca().invert_yaxis()
+plt.show()
+
+# 打印前10个最重要特征
+for i in indices[:10]:
+    print(f"{feature_names[i]}: {importances[i]:.4f}")
 # %%
 # train and evaluate model (SVC)
 svc_params = {
