@@ -844,11 +844,15 @@ com = applyHoliday(com, holidays)
 print("After applyHoliday, columns:", com.columns.tolist())
 # %%
 inputs = [
-    'total_lmp_delta', 'lagged_lmp_da', 'lagged_lmp_rt', 'lagged_delta',
+    'lagged_lmp_da', 'lagged_delta',
     'apparent_temperature (°C)', 'wind_gusts_10m (km/h)', 'pressure_msl (hPa)',
     'soil_temperature_0_to_7cm (°C)', 'soil_moisture_0_to_7cm (m³/m³)',
-    'system_energy_price_rt', 'total_lmp_rt', 'isHoliday'
-]
+    'isHoliday'
+] 
+
+# add hour one-hot encoding
+inputs += [col for col in com.columns if col.startswith('hour_')]
+
 scaler = StandardScaler()
 scaler.fit(com[inputs])
 X = scaler.transform(com[inputs])
@@ -973,10 +977,10 @@ for i in range(1, k+1):
 all_data = all_data.dropna().reset_index(drop=True)
 
 inputs = [
-    'total_lmp_delta', 'lagged_lmp_da', 'lagged_lmp_rt', 'lagged_delta',
+    'lagged_lmp_da', 'lagged_delta',
     'apparent_temperature (°C)', 'wind_gusts_10m (km/h)', 'pressure_msl (hPa)',
     'soil_temperature_0_to_7cm (°C)', 'soil_moisture_0_to_7cm (m³/m³)',
-    'system_energy_price_rt', 'total_lmp_rt', 'isHoliday'
+    'isHoliday'
 ] + [f'total_lmp_da_lag_{i}' for i in range(1, k+1)]
 
 # add hour one-hot encoding
@@ -987,10 +991,15 @@ scaler.fit(all_data[inputs])
 X = scaler.transform(all_data[inputs])
 y = all_data['target_c']
 
-# 4. split data into training and testing
+# 4. split data into  testing
 from sklearn.model_selection import train_test_split
-X_train, X_test, y_train, y_test = train_test_split(
+X_temp, X_test, y_temp, y_test = train_test_split(
     X, y, test_size=0.2, shuffle=True, stratify=y, random_state=42
+)
+
+# validating set
+X_train, X_val, y_train, y_val = train_test_split(
+    X_temp, y_temp, test_size=0.2, shuffle=True, stratify=y_temp, random_state=42
 )
 
 # %%
@@ -999,13 +1008,13 @@ def find_optimal_threshold(y_test, y_pred_proba):
     # 1. calculate precision and recall at different thresholds
     precisions, recalls, thresholds = precision_recall_curve(y_test, y_pred_proba[:, 1])
     
-    # 2. 计算F1分数
+    # 2. calculate F1
     f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
     
-    # 3. 找到最佳F1分数对应的阈值
+    # 3. Find threshold by optimal F1
     optimal_threshold = thresholds[np.argmax(f1_scores)]
     
-    # 4. 可视化
+    # 4. Visulization
     plt.figure(figsize=(10, 6))
     plt.plot(thresholds, precisions[:-1], label='Precision')
     plt.plot(thresholds, recalls[:-1], label='Recall')
@@ -1030,10 +1039,13 @@ rf = RandomForestClassifier(
     min_samples_split=5
 )
 rf.fit(X_train, y_train)
-y_pred_proba = rf.predict_proba(X_test)
-optimal_threshold = find_optimal_threshold(y_test, y_pred_proba)
-y_pred = (y_pred_proba[:, 1] >= optimal_threshold).astype(int)
-print("\n使用最优阈值的结果：")
+#  use validaion set to calculate optimal
+y_val_proba = rf.predict_proba(X_val)
+optimal_threshold_rf = find_optimal_threshold(y_val, y_val_proba)
+# use optimal threshold evaluate on testing set
+y_test_proba = rf.predict_proba(X_test)
+y_pred_optimal = (y_test_proba[:, 1] >= optimal_threshold).astype(int)
+print("\nResult of optimal threshold")
 evaluate_anomaly_detection(y_test, y_pred_optimal, "Random Forest")
 
 # %%
@@ -1070,15 +1082,20 @@ xgb_params = {
 }
 xgb = XGBClassifier(**xgb_params)
 xgb.fit(X_train, y_train)
-y_pred = xgb.predict(X_test)
-print("\nXGBoost evaluation results:")
-evaluate_anomaly_detection(y_test, y_pred, "XGBoost")
+# use validation set to calculate optimal
+y_val_proba = xgb.predict_proba(X_val)
+optimal_threshold_xgb = find_optimal_threshold(y_val, y_val_proba)
+# use optimal threshold evaluate on testing set
+y_test_proba = xgb.predict_proba(X_test)
+y_pred_optimal = (y_test_proba[:, 1] >= optimal_threshold_xgb).astype(int)
+print("\nXGBoost with optimal threshold results:")
+evaluate_anomaly_detection(y_test, y_pred_optimal, "XGBoost")
 
 # %%
 import matplotlib.pyplot as plt
 import numpy as np
 
-# 以RandomForest为例
+# use randomForest
 importances = xgb.feature_importances_
 indices = np.argsort(importances)[::-1]
 feature_names = np.array(inputs)
@@ -1090,7 +1107,7 @@ plt.title("XGBoost Feature Importances")
 plt.gca().invert_yaxis()
 plt.show()
 
-# 打印前10个最重要特征
+# print first 10 feature
 for i in indices[:10]:
     print(f"{feature_names[i]}: {importances[i]:.4f}")
 # %%
@@ -1105,9 +1122,14 @@ svc_params = {
 }
 svc = SVC(**svc_params)
 svc.fit(X_train, y_train)
-y_pred = svc.predict(X_test)
-print("\nSVC evaluation results:")
-evaluate_anomaly_detection(y_test, y_pred, "SVC")
+# use validation set to calculate optimal
+y_val_proba = svc.predict_proba(X_val)
+optimal_threshold_svc = find_optimal_threshold(y_val, y_val_proba)
+# use optimal threshold evaluate on testing set
+y_test_proba = svc.predict_proba(X_test)
+y_pred_optimal = (y_test_proba[:, 1] >= optimal_threshold_svc).astype(int)
+print("\nSVC with optimal threshold results:")
+evaluate_anomaly_detection(y_test, y_pred_optimal, "SVC")
 
 # %%
 # train and evaluate model (Logistic Regression)
@@ -1123,8 +1145,46 @@ grid = GridSearchCV(lr, param_grid, scoring='f1_macro', cv=5)
 grid.fit(X_train, y_train)
 print("Best params:", grid.best_params_)
 best_lr = grid.best_estimator_
-y_pred = best_lr.predict(X_test)
-print("\nLogistic Regression evaluation results:")
-evaluate_anomaly_detection(y_test, y_pred, "Logistic Regression")
+# use validation set to calculate optimal
+y_val_proba = best_lr.predict_proba(X_val)
+optimal_threshold_lr = find_optimal_threshold(y_val, y_val_proba)
+# use optimal threshold evaluate on testing set
+y_test_proba = best_lr.predict_proba(X_test)
+y_pred_optimal = (y_test_proba[:, 1] >= optimal_threshold_lr).astype(int)
+print("\nLogistic Regression with optimal threshold results:")
+evaluate_anomaly_detection(y_test, y_pred_optimal, "Logistic Regression")
 
 # %%
+# Print all optimal thresholds
+print("\nOptimal thresholds for each model:")
+print(f"Random Forest: {optimal_threshold_rf:.4f}")
+print(f"XGBoost: {optimal_threshold_xgb:.4f}")
+print(f"SVC: {optimal_threshold_svc:.4f}")
+print(f"Logistic Regression: {optimal_threshold_lr:.4f}")
+
+# %%
+from sklearn.ensemble import VotingClassifier
+
+# 构建集成模型
+ensemble = VotingClassifier(
+    estimators=[
+        ('rf', rf),
+        ('xgb', xgb),
+        ('svc', svc),
+        ('lr', best_lr)
+    ],
+    voting='soft'  # 'soft'表示用概率平均，'hard'表示用类别投票
+)
+
+# 训练集成模型
+ensemble.fit(X_train, y_train)
+
+# 验证集上找最优阈值
+y_val_proba = ensemble.predict_proba(X_val)
+optimal_threshold_ensemble = find_optimal_threshold(y_val, y_val_proba)
+
+# 测试集评估
+y_test_proba = ensemble.predict_proba(X_test)
+y_pred_optimal = (y_test_proba[:, 1] >= optimal_threshold_ensemble).astype(int)
+print("\nEnsemble with optimal threshold results:")
+evaluate_anomaly_detection(y_test, y_pred_optimal, "Ensemble")
