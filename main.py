@@ -1165,7 +1165,7 @@ print(f"Logistic Regression: {optimal_threshold_lr:.4f}")
 # %%
 from sklearn.ensemble import VotingClassifier
 
-# 构建集成模型
+# build ensemble model
 ensemble = VotingClassifier(
     estimators=[
         ('rf', rf),
@@ -1173,18 +1173,19 @@ ensemble = VotingClassifier(
         ('svc', svc),
         ('lr', best_lr)
     ],
-    voting='soft'  # 'soft'表示用概率平均，'hard'表示用类别投票
+    voting='soft'  # 'soft' means use probability average, 'hard' means use class voting
 )
 
-# 训练集成模型
+# train ensemble model
 ensemble.fit(X_train, y_train)
 
-# 验证集上找最优阈值
+# find optimal threshold on validation set
 y_val_proba = ensemble.predict_proba(X_val)
 optimal_threshold_ensemble = find_optimal_threshold(y_val, y_val_proba)
 
-# 测试集评估
+# evaluate on testing set
 y_test_proba = ensemble.predict_proba(X_test)
 y_pred_optimal = (y_test_proba[:, 1] >= optimal_threshold_ensemble).astype(int)
 print("\nEnsemble with optimal threshold results:")
 evaluate_anomaly_detection(y_test, y_pred_optimal, "Ensemble")
+# %%
