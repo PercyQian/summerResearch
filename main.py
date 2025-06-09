@@ -1,7 +1,7 @@
 # %%
 import pandas as pd 
 import matplotlib.pyplot as plt 
-%matplotlib inline 
+# %matplotlib inline 
 import numpy as np
 import random
 import time 
@@ -969,7 +969,7 @@ for items in os.listdir(LMP_PATH):
 all_data = pd.concat(all_coms, axis=0, ignore_index=True)
 all_data = pd.get_dummies(all_data, columns=['hour']) #one-hot encoding hour
 # 3. features and labels
-k = 3  # try small k first
+k = 7  # try small k first
 
 for i in range(1, k+1):
     all_data[f'total_lmp_da_lag_{i}'] = all_data['total_lmp_da'].shift(i)
@@ -1188,4 +1188,55 @@ y_test_proba = ensemble.predict_proba(X_test)
 y_pred_optimal = (y_test_proba[:, 1] >= optimal_threshold_ensemble).astype(int)
 print("\nEnsemble with optimal threshold results:")
 evaluate_anomaly_detection(y_test, y_pred_optimal, "Ensemble")
+# %%
+
+def plot_precision_recall_comparison(models_dict, X_test, y_test):
+    """
+    draw precision-recall curves comparison for multiple models
+    models_dict: dictionary, contains model name and model object
+    X_test: test data features
+    y_test: test data labels
+    """
+    plt.figure(figsize=(10, 8))
+    
+    # calculate and draw precision-recall curves for each model
+    for model_name, model in models_dict.items():
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
+        precision, recall, _ = precision_recall_curve(y_test, y_pred_proba)
+        
+        # calculate F1 score
+        f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
+        
+        # draw precision-recall curve
+        plt.plot(recall, precision, label=f'{model_name}', linewidth=2)
+    
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall Curves Comparison')
+    plt.legend(loc='best')
+    plt.grid(True)
+    plt.show()
+
+# example
+# models_dict = {
+#     'Random Forest': rf,
+#     'XGBoost': xgb,
+#     'SVC': svc,
+#     'Logistic Regression': best_lr
+# }
+# plot_precision_recall_comparison(models_dict, X_test, y_test)
+
+# %%
+
+# create model dictionary and draw comparison plot
+models_dict = {
+    'Random Forest': rf,
+    'XGBoost': xgb,
+    'SVC': svc,
+    'Logistic Regression': best_lr
+}
+
+# draw comparison plot
+plot_precision_recall_comparison(models_dict, X_test, y_test)
+
 # %%
