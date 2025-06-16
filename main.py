@@ -17,17 +17,7 @@ import seaborn as sns
 # %%
 # Url of weather data 
 
-# %%
-t = pd.read_csv("newWeatherData.csv")
 
-# %%
-t = t[5:len(t)-20]
-
-# %%
-t[:739].iloc[5]['time'].split("T")[1].split(":")[0]
-
-# %%
-t
 
 # %%
 def addWeatherHourColumn(data : pd.DataFrame) -> pd.DataFrame:
@@ -59,17 +49,12 @@ def addWeatherHourColumn(data : pd.DataFrame) -> pd.DataFrame:
 
     return data
 
-# %%
-t
 
 # %%
 # Push to repo 
 
-# %%
-t= addWeatherHourColumn(t)
 
-# %%
-t
+
 
 # %%
 def saveWeatherHourlyData(data : pd.DataFrame , path : str) -> pd.DataFrame:
@@ -89,14 +74,6 @@ def saveWeatherHourlyData(data : pd.DataFrame , path : str) -> pd.DataFrame:
 # %%
 #saveWeatherHourlyData(t,"openMeteo")
 
-# %%
-
-
-# %%
-
-
-# %%
-t.head()
 
 # %%
 months = ["janurary","february", "march", "april", "may", "june", "july", "august", "september", "october", "november","december"]
@@ -881,8 +858,6 @@ def loadDataByHour(hour : str) -> pd.DataFrame:
 
 # 97-98% = 70%-80%
 
-# %%
-
 
 # %%
 # why regression worse than classification
@@ -890,7 +865,9 @@ def loadDataByHour(hour : str) -> pd.DataFrame:
 # Regulation might have changed due to a cap (potential 1000)
 
 
+
 # %%
+'''
 data = loadDataByHour("8PM")
 
 inputs = (data.describe().columns[:-2])
@@ -902,14 +879,13 @@ X = scaler.transform(data[inputs])
 
 X_train, X_test, y_train, y_test = train_test_split(X, data[outputs]["target_c"], test_size=0.2, shuffle=False)
 
-# %%
-from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
-
-# %%
 
 
-# %%
+
+
+
+
+
 from sklearn.model_selection import GridSearchCV
 # Logistic Regression: default params is best 
 # SVC : Default params but (C=0.01)
@@ -920,27 +896,21 @@ from sklearn.model_selection import GridSearchCV
 # LogisticRegression, RandomForestClassifier, SVC, NeuralNetwork,
 # KNeighborsClassifier, Xgboost, LightGBM, 
 
-# %%
-from sklearn.metrics import classification_report
 
-def evaluate_anomaly_detection(y_true, y_pred, model_name):
-    print(f"{model_name} detection results:")
-    print(classification_report(y_true, y_pred, target_names=['normal', 'large relative deviation'], zero_division=0))
 
-# %%
 # Load data
 com = loadDataByHour("8PM")
 total_lmp_delta(com)
 addTarget_corrected(com)
 #add lagged features
 com['lagged_lmp_da'] = com['total_lmp_da'].shift(1)
-com['lagged_lmp_rt'] = com['total_lmp_rt'].shift(1)
-com['lagged_delta'] = com['total_lmp_delta'].shift(1)
+    # 移除信息泄漏特征：lagged_lmp_rt 和 lagged_delta
+    # 因为预测时无法获得上一小时的RT数据
 com.dropna(inplace=True)
 
 com = applyHoliday(com, holidays)
 print("After applyHoliday, columns:", com.columns.tolist())
-# %%
+
 inputs = [
     'lagged_lmp_da', 'lagged_delta',
     'apparent_temperature (°C)', 'wind_gusts_10m (km/h)', 'pressure_msl (hPa)',
@@ -965,7 +935,7 @@ print("\nOriginal data distribution:")
 for i in range(3):
     print(f"Class {i}: {np.sum(y_train == i)} samples")
 
-# %%
+
 # RandomForest
 rlf_params = {
     'criterion': 'entropy',
@@ -981,7 +951,7 @@ y_pred = rf.predict(X_test)
 print("\nRandom Forest evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "Random Forest")
 
-# %%
+
 # XGBoost
 xgb_params = {
     'colsample_bytree': 0.8,
@@ -999,7 +969,7 @@ y_pred = xgb.predict(X_test)
 print("\nXGBoost evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "XGBoost")
 
-# %%
+
 # SVC
 svc_params = {
     'C': 1.0,
@@ -1015,7 +985,7 @@ y_pred = svc.predict(X_test)
 print("\nSVC evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "SVC")
 
-# %%
+
 # Logistic Regression
 param_grid = {
     'C': [0.1, 0.5, 1, 5, 10],
@@ -1030,12 +1000,44 @@ y_pred = best_lr.predict(X_test)
 print("\nLogistic Regression evaluation results:")
 evaluate_anomaly_detection(y_test, y_pred, "Logistic Regression")
 
-# %%
+
 # Print test set distribution
 print("\nTest set distribution:")
 for i in range(3):
     print(f"Class {i}: {np.sum(y_test == i)} samples")
+'''
+#%%
+from sklearn.metrics import classification_report
 
+def evaluate_anomaly_detection(y_true, y_pred, model_name):
+    print(f"{model_name} detection results:")
+    report = classification_report(y_true, y_pred, target_names=['normal', 'large relative deviation'], zero_division=0, output_dict=True)
+    print(classification_report(y_true, y_pred, target_names=['normal', 'large relative deviation'], zero_division=0))
+    
+    # return F1 score of anomaly class
+    try:
+        anomaly_f1 = report['large relative deviation']['f1-score']
+        print(f"📊 F1 score of anomaly class: {anomaly_f1:.4f}")
+        return anomaly_f1
+    except KeyError as e:
+        print(f"⚠️ cannot get F1 score of anomaly class: {e}")
+        print(f"available keys: {list(report.keys())}")
+        # try to use index 1 (anomaly class)
+        try:
+            # if target_names is not correctly mapped, try to use index 1 directly
+            if '1' in report:
+                anomaly_f1 = report['1']['f1-score']
+                print(f"📊 use index 1 to get F1 score of anomaly class: {anomaly_f1:.4f}")
+                return anomaly_f1
+            else:
+                print("❌ cannot find F1 score of anomaly class, return 0.0")
+                return 0.0
+        except:
+            print("❌ cannot find F1 score of anomaly class, return 0.0")
+            return 0.0
+
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
 # %%
 # 5.19.2025 Use all hours data to train and evaluate model
 import os
@@ -1057,8 +1059,8 @@ for items in os.listdir(LMP_PATH):
     total_lmp_delta(com)
     addTarget_corrected(com)
     com['lagged_lmp_da'] = com['total_lmp_da'].shift(1)
-    com['lagged_lmp_rt'] = com['total_lmp_rt'].shift(1)
-    com['lagged_delta'] = com['total_lmp_delta'].shift(1)
+    # remove information leakage features: lagged_lmp_rt and lagged_delta
+    # because RT data is not available at prediction time
     com.dropna(inplace=True)
     all_coms.append(com)
 
@@ -1075,11 +1077,11 @@ for i in range(1, k+1):
 all_data = all_data.dropna().reset_index(drop=True)
 
 inputs = [
-    'lagged_lmp_da', 'lagged_delta',
+    'lagged_lmp_da',  # only keep lagged DA features, because DA data is available in advance
     'apparent_temperature (°C)', 'wind_gusts_10m (km/h)', 'pressure_msl (hPa)',
     'soil_temperature_0_to_7cm (°C)', 'soil_moisture_0_to_7cm (m³/m³)',
     'isHoliday'
-] + [f'total_lmp_da_lag_{i}' for i in range(1, k+1)]
+] + [f'total_lmp_da_lag_{i}' for i in range(1, k+1)]  # multiple lagged DA features
 
 # add hour one-hot encoding
 inputs += [col for col in all_data.columns if col.startswith('hour_')]
@@ -1108,17 +1110,17 @@ def find_optimal_threshold(y_test, y_pred_proba):
     
     # 2. calculate F1 for anomaly class (class 1)
     f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
-    # 处理除零情况
+    # handle division by zero
     f1_scores = np.nan_to_num(f1_scores)
     
     # 3. Find threshold by optimal F1 for anomaly class
     optimal_idx = np.argmax(f1_scores)
     optimal_threshold = thresholds[optimal_idx] if optimal_idx < len(thresholds) else 0.5
     
-    print(f"最优阈值: {optimal_threshold:.4f}")
-    print(f"异常类最优F1: {f1_scores[optimal_idx]:.4f}")
-    print(f"对应精确率: {precisions[optimal_idx]:.4f}")
-    print(f"对应召回率: {recalls[optimal_idx]:.4f}")
+    print(f"optimal threshold: {optimal_threshold:.4f}")
+    print(f"anomaly class optimal F1: {f1_scores[optimal_idx]:.4f}")
+    print(f"corresponding precision: {precisions[optimal_idx]:.4f}")
+    print(f"corresponding recall: {recalls[optimal_idx]:.4f}")
     
     # 4. Visulization
     plt.figure(figsize=(10, 6))
@@ -1147,19 +1149,20 @@ rf = RandomForestClassifier(
 rf.fit(X_train, y_train)
 #  use validaion set to calculate optimal
 y_val_proba = rf.predict_proba(X_val)[:, 1]
-print("\n=== Random Forest 阈值优化 ===")
+print("\n=== Random Forest threshold optimization ===")
 optimal_threshold_rf = find_optimal_threshold(y_val, y_val_proba)
 # use optimal threshold evaluate on testing set
 y_test_proba = rf.predict_proba(X_test)[:, 1]
 y_pred_optimal = (y_test_proba >= optimal_threshold_rf).astype(int)
-print("\nRandom Forest 最优阈值测试结果:")
-evaluate_anomaly_detection(y_test, y_pred_optimal, "Random Forest")
+print("\nRandom Forest optimal threshold test results:")
+rf_f1 = evaluate_anomaly_detection(y_test, y_pred_optimal, "Random Forest")
 
-# 保存Random Forest模型
+# save Random Forest model
 models_dict_temp = {'Random Forest': rf}
 optimal_thresholds_temp = {'Random Forest': optimal_threshold_rf}
-save_trained_models(models_dict_temp, scaler, optimal_thresholds_temp)
-print("✅ Random Forest模型已保存到trained_models/")
+f1_scores_temp = {'Random Forest': rf_f1}
+save_models_if_better(models_dict_temp, scaler, optimal_thresholds_temp, f1_scores_temp)
+print("✅ Random Forest model saved to trained_models/")
 
 # %%
 import matplotlib.pyplot as plt
@@ -1197,19 +1200,20 @@ xgb = XGBClassifier(**xgb_params)
 xgb.fit(X_train, y_train)
 # use validation set to calculate optimal
 y_val_proba = xgb.predict_proba(X_val)[:, 1]
-print("\n=== XGBoost 阈值优化 ===")
+print("\n=== XGBoost threshold optimization ===")
 optimal_threshold_xgb = find_optimal_threshold(y_val, y_val_proba)
 # use optimal threshold evaluate on testing set
 y_test_proba = xgb.predict_proba(X_test)[:, 1]
 y_pred_optimal = (y_test_proba >= optimal_threshold_xgb).astype(int)
-print("\nXGBoost 最优阈值测试结果:")
-evaluate_anomaly_detection(y_test, y_pred_optimal, "XGBoost")
+print("\nXGBoost optimal threshold test results:")
+xgb_f1 = evaluate_anomaly_detection(y_test, y_pred_optimal, "XGBoost")
 
-# 保存XGBoost模型
+# save XGBoost model
 models_dict_temp = {'XGBoost': xgb}
 optimal_thresholds_temp = {'XGBoost': optimal_threshold_xgb}
-save_trained_models(models_dict_temp, scaler, optimal_thresholds_temp)
-print("✅ XGBoost模型已保存到trained_models/")
+f1_scores_temp = {'XGBoost': xgb_f1}
+save_models_if_better(models_dict_temp, scaler, optimal_thresholds_temp, f1_scores_temp)
+print("✅ XGBoost model saved to trained_models/")
 
 # %%
 import matplotlib.pyplot as plt
@@ -1244,19 +1248,20 @@ svc = SVC(**svc_params)
 svc.fit(X_train, y_train)
 # use validation set to calculate optimal
 y_val_proba = svc.predict_proba(X_val)[:, 1]
-print("\n=== SVC 阈值优化 ===")
+print("\n=== SVC threshold optimization ===")
 optimal_threshold_svc = find_optimal_threshold(y_val, y_val_proba)
 # use optimal threshold evaluate on testing set
 y_test_proba = svc.predict_proba(X_test)[:, 1]
 y_pred_optimal = (y_test_proba >= optimal_threshold_svc).astype(int)
-print("\nSVC 最优阈值测试结果:")
-evaluate_anomaly_detection(y_test, y_pred_optimal, "SVC")
+print("\nSVC optimal threshold test results:")
+svc_f1 = evaluate_anomaly_detection(y_test, y_pred_optimal, "SVC")
 
-# 保存SVC模型
+# save SVC model
 models_dict_temp = {'SVC': svc}
 optimal_thresholds_temp = {'SVC': optimal_threshold_svc}
-save_trained_models(models_dict_temp, scaler, optimal_thresholds_temp)
-print("✅ SVC模型已保存到trained_models/")
+f1_scores_temp = {'SVC': svc_f1}
+save_models_if_better(models_dict_temp, scaler, optimal_thresholds_temp, f1_scores_temp)
+print("✅ SVC model saved to trained_models/")
 
 # %%
 # train and evaluate model (Logistic Regression)
@@ -1274,30 +1279,31 @@ print("Best params:", grid.best_params_)
 best_lr = grid.best_estimator_
 # use validation set to calculate optimal
 y_val_proba = best_lr.predict_proba(X_val)[:, 1]
-print("\n=== Logistic Regression 阈值优化 ===")
+print("\n=== Logistic Regression threshold optimization ===")
 optimal_threshold_lr = find_optimal_threshold(y_val, y_val_proba)
 # use optimal threshold evaluate on testing set
 y_test_proba = best_lr.predict_proba(X_test)[:, 1]
 y_pred_optimal = (y_test_proba >= optimal_threshold_lr).astype(int)
-print("\nLogistic Regression 最优阈值测试结果:")
-evaluate_anomaly_detection(y_test, y_pred_optimal, "Logistic Regression")
+print("\nLogistic Regression optimal threshold test results:")
+lr_f1 = evaluate_anomaly_detection(y_test, y_pred_optimal, "Logistic Regression")
 
-# 保存Logistic Regression模型
+# save Logistic Regression model
 models_dict_temp = {'Logistic Regression': best_lr}
 optimal_thresholds_temp = {'Logistic Regression': optimal_threshold_lr}
-save_trained_models(models_dict_temp, scaler, optimal_thresholds_temp)
-print("✅ Logistic Regression模型已保存到trained_models/")
+f1_scores_temp = {'Logistic Regression': lr_f1}
+save_models_if_better(models_dict_temp, scaler, optimal_thresholds_temp, f1_scores_temp)
+print("✅ Logistic Regression model saved to trained_models/")
 
 # %%
 # Print all optimal thresholds
-print("\n=== 所有模型的最优阈值 ===")
+print("\n=== all models optimal thresholds ===")
 print(f"Random Forest: {optimal_threshold_rf:.4f}")
 print(f"XGBoost: {optimal_threshold_xgb:.4f}")
 print(f"SVC: {optimal_threshold_svc:.4f}")
 print(f"Logistic Regression: {optimal_threshold_lr:.4f}")
 
-# 统一保存所有模型（最终版本）
-print("\n=== 保存所有训练好的模型 ===")
+# save all models
+print("\n=== save all trained models ===")
 models_dict_final = {
     'Random Forest': rf,
     'XGBoost': xgb,
@@ -1312,10 +1318,19 @@ optimal_thresholds_final = {
     'Logistic Regression': optimal_threshold_lr
 }
 
-save_trained_models(models_dict_final, scaler, optimal_thresholds_final)
-print("✅ 所有模型已保存到trained_models/（使用修正版addTarget_corrected训练）")
+# 收集所有F1分数
+f1_scores_final = {
+    'Random Forest': rf_f1,
+    'XGBoost': xgb_f1,
+    'SVC': svc_f1,
+    'Logistic Regression': lr_f1
+}
+
+save_models_if_better(models_dict_final, scaler, optimal_thresholds_final, f1_scores_final)
+print("✅ all models saved to trained_models/ (using corrected version of addTarget_corrected)")
 
 # %%
+'''
 from sklearn.ensemble import VotingClassifier
 
 # build ensemble model
@@ -1341,6 +1356,7 @@ y_test_proba = ensemble.predict_proba(X_test)
 y_pred_optimal = (y_test_proba[:, 1] >= optimal_threshold_ensemble).astype(int)
 print("\nEnsemble with optimal threshold results:")
 evaluate_anomaly_detection(y_test, y_pred_optimal, "Ensemble")
+'''
 # %%
 
 def plot_precision_recall_comparison(models_dict, X_test, y_test):
@@ -1597,310 +1613,6 @@ weather_data = download_weather_data_from_meteo(
 '''
 
 # %%
-# Build historical baseline for anomaly detection
-
-def build_historical_baseline(historical_lmp_path="hourlyLmpData/westernData", 
-                             historical_weather_path="hourlyWeatherData/openMeteo", 
-                             k=2.5):
-    """
-    Build historical baseline for anomaly detection using historical 2-3 years data
-    
-    Parameters:
-    - historical_lmp_path: historical LMP data path
-    - historical_weather_path: historical weather data path
-    - k: standard deviation multiplier
-    
-    Returns:
-    - baseline_stats: statistical baseline for each hour
-    """
-    print("=== Build historical baseline for anomaly detection ===")
-    
-    import os
-    
-    # check if historical data exists
-    if not os.path.exists(historical_lmp_path):
-        print(f"Historical LMP data path does not exist: {historical_lmp_path}")
-        return None
-        
-    if not os.path.exists(historical_weather_path):
-        print(f"Historical weather data path does not exist: {historical_weather_path}")
-        return None
-    
-    # check weather data file format
-    weather_files = os.listdir(historical_weather_path)
-    weather_files = [f for f in weather_files if f.startswith('weather_data_')]
-    
-    # check file format
-    has_csv = any(f.endswith('.csv') for f in weather_files)
-    has_pkl = any(f.endswith('.pkl') for f in weather_files)
-    
-    print(f"Weather data file: CSV={has_csv}, PKL={has_pkl}")
-    weather_ext = '.csv' if has_csv else '.pkl'
-    
-    # merge all historical data
-    all_historical_data = []
-    lmp_files = os.listdir(historical_lmp_path)
-    processed_count = 0
-    
-    for lmp_file in lmp_files:
-        if lmp_file.startswith('lmp_data_') and lmp_file.endswith('.csv'):
-            hour = lmp_file.replace('lmp_data_', '').replace('.csv', '')
-            
-            # read LMP data - although the file name is .csv, it may be pickle format
-            lmp_path = os.path.join(historical_lmp_path, lmp_file)
-            
-            # try to read as pickle (because historical data is actually pickle format)
-            try:
-                lmp_data = pd.read_pickle(lmp_path)
-                print(f"📁 {hour}: read pickle format LMP file ({len(lmp_data)} records)")
-            except:
-                try:
-                    lmp_data = pd.read_csv(lmp_path)
-                    print(f"📁 {hour}: read CSV format LMP file ({len(lmp_data)} records)")
-                except Exception as e:
-                    print(f"❌ cannot read LMP file {lmp_file}: {e}")
-                    continue
-            
-            # read corresponding weather data
-            weather_file = f"weather_data_{hour}{weather_ext}"
-            weather_path = os.path.join(historical_weather_path, weather_file)
-            
-            if os.path.exists(weather_path):
-                # read weather data according to file format - it may be pickle format although the file name is .csv
-                try:
-                    # try to read as pickle (it may be pickle format)
-                    try:
-                        weather_data = pd.read_pickle(weather_path)
-                        print(f"🌤️ {hour}: read pickle format weather file ({len(weather_data)} records)")
-                    except:
-                        # if pickle fails, try CSV
-                        weather_data = pd.read_csv(weather_path)
-                        print(f"🌤️ {hour}: read CSV format weather file ({len(weather_data)} records)")
-                    
-                    # merge data
-                    combined = combineDataFrames(lmp_data, weather_data)
-                    combined = applyHoliday(combined, holidays)
-                    combined['hour'] = hour
-                    
-                    # calculate error
-                    combined['error'] = combined['total_lmp_rt'] - combined['total_lmp_da']
-                    
-                    # extract time features
-                    if combined['datetime_beginning_utc'].dtype == 'object':
-                        combined['datetime_beginning_utc'] = pd.to_datetime(combined['datetime_beginning_utc'], format='%m/%d/%Y %I:%M:%S %p')
-                    
-                    combined['hour_num'] = combined['datetime_beginning_utc'].dt.hour
-                    combined['dow'] = combined['datetime_beginning_utc'].dt.dayofweek
-                    
-                    all_historical_data.append(combined)
-                    processed_count += 1
-                    print(f"✅ processed {hour}: {len(combined)} records")
-                    
-                except Exception as e:
-                    print(f"❌ cannot read weather file {weather_file}: {e}")
-                    continue
-                    
-            else:
-                print(f"⚠️ no corresponding weather file: {weather_path}")
-    
-    print(f"\n📊 processing result: successfully processed {processed_count} hours of data")
-    
-    if not all_historical_data:
-        print("❌ no valid historical data")
-        return None
-    
-    # merge all historical data
-    print("merge historical data...")
-    historical_df = pd.concat(all_historical_data, axis=0, ignore_index=True)
-    
-    print(f"✅ historical data: {len(historical_df)} records")
-    print(f"time range: {historical_df['datetime_beginning_utc'].min()} to {historical_df['datetime_beginning_utc'].max()}")
-    print(f"error statistics: mean={historical_df['error'].mean():.3f}, std={historical_df['error'].std():.3f}")
-    
-    # calculate statistical baseline for each hour
-    print("calculate statistical baseline for each hour...")
-    baseline_stats = historical_df.groupby(['hour_num', 'dow'])['error'].agg(
-        mu='mean',
-        sigma='std', 
-        count='count'
-    ).reset_index()
-    
-    # handle cases where standard deviation is NaN or 0
-    global_sigma = historical_df['error'].std()
-    baseline_stats['sigma'] = baseline_stats['sigma'].fillna(global_sigma)
-    baseline_stats.loc[baseline_stats['sigma'] == 0, 'sigma'] = global_sigma
-    
-    print(f"✅ built {len(baseline_stats)} hours of baseline")
-    print("baseline statistics example:")
-    print(baseline_stats.head(10))
-    
-    # show number of samples for each hour
-    print(f"\nnumber of samples for each hour:")
-    print(f"min: {baseline_stats['count'].min()}")
-    print(f"max: {baseline_stats['count'].max()}")
-    print(f"mean: {baseline_stats['count'].mean():.1f}")
-
-    baseline_filename = f"historical_baseline_k{k}.csv"
-    baseline_stats.to_csv(baseline_filename, index=False)
-    print(f"✅ baseline saved to: {baseline_filename}")
-    
-    return baseline_stats
-
-
-def detect_anomalies_with_baseline(new_data, baseline_stats, k=2.5):
-    """
-    Detect anomalies with historical baseline
-    
-    Parameters:
-    - new_data: new data DataFrame
-    - baseline_stats: historical baseline statistics
-    - k: standard deviation multiplier
-    """
-    print(f"=== detect anomalies with historical baseline (k={k}) ===")
-    
-    df = new_data.copy()
-    
-    # calculate error
-    df['error'] = df['total_lmp_rt'] - df['total_lmp_da']
-    
-    # extract time features
-    try:
-        if df['datetime_beginning_utc'].dtype == 'object':
-            # try to parse time format
-            df['datetime_beginning_utc'] = pd.to_datetime(df['datetime_beginning_utc'], format='%m/%d/%Y %I:%M:%S %p')
-        
-        df['hour_num'] = df['datetime_beginning_utc'].dt.hour
-        df['dow'] = df['datetime_beginning_utc'].dt.dayofweek
-    except Exception as e:
-        print(f"⚠️ time parsing failed, use hourTime to extract hour: {e}")
-        # if time parsing failed, use hourTime to extract hour
-        if 'hourTime' in df.columns:
-            # extract hour from hourTime
-            hour_mapping = {
-                '12AM': 0, '1AM': 1, '2AM': 2, '3AM': 3, '4AM': 4, '5AM': 5, '6AM': 6, '7AM': 7, '8AM': 8, '9AM': 9, '10AM': 10, '11AM': 11,
-                '12PM': 12, '1PM': 13, '2PM': 14, '3PM': 15, '4PM': 16, '5PM': 17, '6PM': 18, '7PM': 19, '8PM': 20, '9PM': 21, '10PM': 22, '11PM': 23
-            }
-            df['hour_num'] = df['hourTime'].map(hour_mapping).fillna(0).astype(int)
-            df['dow'] = 0  # assume Monday, because the data is small and the impact on grouping is not large
-    
-    print(f"new data: {len(df)} records")
-    print(f"time range: {df['datetime_beginning_utc'].min()} to {df['datetime_beginning_utc'].max()}")
-    
-    # merge baseline statistics
-    df = df.merge(baseline_stats, on=['hour_num', 'dow'], how='left
-    global_mu = baseline_stats['mu'].mean()
-    global_sigma = baseline_stats['sigma'].mean()
-    
-    df['mu'] = df['mu'].fillna(global_mu)
-    df['sigma'] = df['sigma'].fillna(global_sigma)
-    
-    # calculate anomaly
-    df['abs_deviation'] = np.abs(df['error'] - df['mu'])
-    df['threshold'] = k * df['sigma']
-    df['is_anomaly'] = (df['abs_deviation'] > df['threshold']).astype(int)
-    
-    # statistics result
-    total_anomalies = df['is_anomaly'].sum()
-    anomaly_rate = total_anomalies / len(df) * 100
-    
-    print(f"\nanomaly detection result:")
-    print(f"total anomalies: {total_anomalies}")
-    print(f"anomaly rate: {anomaly_rate:.2f}%")
-    
-    # show anomaly details
-    if total_anomalies > 0:
-        anomalies = df[df['is_anomaly'] == 1].sort_values('abs_deviation', ascending=False)
-        print(f"\n{min(10, len(anomalies))} largest anomalies:")
-        cols = ['datetime_beginning_utc', 'error', 'abs_deviation', 'threshold', 'hour_num', 'dow']
-        print(anomalies[cols].head(10))
-        
-        # statistics anomalies by hour
-        hourly_anomalies = df.groupby('hour_num')['is_anomaly'].agg(['sum', 'count', 'mean']).round(3)
-        hourly_anomalies.columns = ['anomaly count', 'total count', 'anomaly rate']
-        print(f"\nanomaly distribution by hour:")
-        print(hourly_anomalies[hourly_anomalies['anomaly count'] > 0])
-    else:
-        print("\nno anomalies detected")
-    
-    return df
-
-def full_anomaly_detection_pipeline(new_da_path, new_rt_path, new_weather_path, k=2.5):
-    """
-    Complete anomaly detection pipeline:
-    1. build historical baseline
-    2. process new data
-    3. detect anomalies
-    """
-    print("=== complete anomaly detection pipeline ===")
-    
-    # 1. build historical baseline
-    baseline_stats = build_historical_baseline(k=k)
-    
-    if baseline_stats is None:
-        print("❌ cannot build historical baseline")
-        return None
-    
-    # 2. process new data
-    print("\nprocess new data...")
-    result = simple_anomaly_validation(new_da_path, new_rt_path, new_weather_path, k=k)
-    
-    if result is None:
-        print("❌ new data processing failed")
-        return None
-    
-    # 3. detect anomalies with historical baseline
-    print("\ndetect anomalies with historical baseline...")
-    final_result = detect_anomalies_with_baseline(result, baseline_stats, k=k)
-    
-    # 4. save final result
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"historical_baseline_anomaly_detection_k{k}_{timestamp}.csv"
-    final_result.to_csv(filename, index=False)
-    print(f"\nfinal result saved to: {filename}")
-    
-    return final_result
-
-# %%
-
-# %%
-# run anomaly detection with historical baseline
-
-print("=== anomaly detection with historical baseline ===")
-print("step 1: build statistical baseline for each hour")
-print("step 2: process new data")
-print("step 3: detect anomalies with historical baseline")
-print("step 4: save final result")
-
-# run complete pipeline
-final_result = full_anomaly_detection_pipeline(
-    new_da_path="applicationData/da_hrl_lmps_6.5.csv",
-    new_rt_path="applicationData/rt_hrl_lmps_6.5.csv", 
-    new_weather_path="hourlyWeatherData/meteo/",
-    k=2.5  # adjustable: 2.0 more sensitive, 3.0 less sensitive
-)
-
-if final_result is not None:
-    print(f"\n🎯 complete pipeline executed successfully!")
-    print(f"baseline built with {len(final_result)} records")
-    print(f"detected {final_result['is_anomaly'].sum()} anomalies in new data")
-    
-    # show anomaly details
-    if final_result['is_anomaly'].sum() > 0:
-        anomalies = final_result[final_result['is_anomaly'] == 1]
-        print(f"\nanomaly details:")
-        for _, anomaly in anomalies.iterrows():
-            print(f"  {anomaly['datetime_beginning_utc']}: error={anomaly['error']:.2f}, deviation={anomaly['abs_deviation']:.2f}, threshold={anomaly['threshold']:.2f}")
-else:
-    print("❌ pipeline execution failed")
-
-print("\n💡 explanation:")
-print("- this method uses historical 2-3 years data to establish a normal range for each \"hour + day of week\"")
-print("- then check if new data is out of historical normal range")
-print("- k=2.5 means anomaly if deviation is more than 2.5 times the standard deviation")
-
-# %%
-
-# %%
 # save trained
 
 import pickle
@@ -1942,6 +1654,120 @@ def save_trained_models(models_dict, scaler, optimal_thresholds, save_path="trai
     print(f"✅ optimal thresholds saved: {thresholds_file}")
     
     print(f"all model components saved to: {save_path}")
+
+def save_models_if_better(new_models_dict, new_scaler, new_optimal_thresholds, new_f1_scores, save_path="trained_models/"):
+    """
+    compare new models with existing models, only save if better
+    
+    Parameters:
+    - new_models_dict: new trained models dictionary
+    - new_scaler: new scaler
+    - new_optimal_thresholds: new optimal thresholds
+    - new_f1_scores: new model F1 scores dictionary {model_name: f1_score}
+    - save_path: save path
+    """
+    import os
+    from sklearn.metrics import f1_score
+    
+    print("=== compare model performance and save if better ===")
+    
+    # try to load existing models and F1 scores
+    try:
+        existing_models, existing_scaler, existing_thresholds = load_trained_models(save_path)
+        has_existing_models = len(existing_models) > 0 and existing_scaler is not None
+        
+        # try to load existing F1 scores
+        f1_scores_file = f"{save_path}model_f1_scores.pkl"
+        if os.path.exists(f1_scores_file):
+            with open(f1_scores_file, 'rb') as f:
+                existing_f1_scores = pickle.load(f)
+        else:
+            existing_f1_scores = {}
+    except:
+        has_existing_models = False
+        existing_models = {}
+        existing_thresholds = {}
+        existing_f1_scores = {}
+    
+    models_to_save = {}
+    thresholds_to_save = {}
+    f1_scores_to_save = {}
+    
+    for model_name, new_model in new_models_dict.items():
+        # directly use F1 score from input
+        new_f1 = new_f1_scores.get(model_name, 0.0)
+        # handle None values
+        if new_f1 is None:
+            new_f1 = 0.0
+            print(f"⚠️ F1 score of {model_name} is None, set to 0.0")
+        
+        new_threshold = new_optimal_thresholds.get(model_name, 0.5)
+        
+        print(f"\n{model_name}:")
+        print(f"  new model F1: {new_f1:.4f}")
+        
+        # if no existing model, save directly
+        if not has_existing_models or model_name not in existing_models:
+            print(f"  ✅ no existing {model_name} model, save new model")
+            models_to_save[model_name] = new_model
+            thresholds_to_save[model_name] = new_threshold
+            f1_scores_to_save[model_name] = new_f1
+        else:
+            # get existing model F1 score
+            existing_f1 = existing_f1_scores.get(model_name, 0.0)
+            
+            print(f"  existing model F1: {existing_f1:.4f}")
+            
+            # compare F1 scores
+            if new_f1 > existing_f1:
+                improvement = new_f1 - existing_f1
+                print(f"  ✅ new model better (improvement {improvement:.4f}), save new model")
+                models_to_save[model_name] = new_model
+                thresholds_to_save[model_name] = new_threshold
+                f1_scores_to_save[model_name] = new_f1
+            else:
+                decline = existing_f1 - new_f1
+                print(f"  ❌ new model worse (decline {decline:.4f}), keep existing model")
+                # keep existing model F1 score
+                f1_scores_to_save[model_name] = existing_f1
+    
+    # save models to update
+    if models_to_save:
+        print(f"\n💾 save {len(models_to_save)} improved models...")
+        
+        # if there are existing models, need to merge
+        if has_existing_models:
+            # keep existing models that are not updated
+            final_models = existing_models.copy()
+            final_thresholds = existing_thresholds.copy()
+            final_f1_scores = existing_f1_scores.copy()
+            
+            # update improved models
+            final_models.update(models_to_save)
+            final_thresholds.update(thresholds_to_save)
+            final_f1_scores.update(f1_scores_to_save)
+            
+            # use new scaler (because features may have changed)
+            save_trained_models(final_models, new_scaler, final_thresholds, save_path)
+        else:
+            # no existing model, save new model directly
+            final_f1_scores = f1_scores_to_save.copy()
+            save_trained_models(models_to_save, new_scaler, thresholds_to_save, save_path)
+        
+        # save
+        f1_scores_file = f"{save_path}model_f1_scores.pkl"
+        with open(f1_scores_file, 'wb') as f:
+            pickle.dump(final_f1_scores, f)
+        print(f"✅ F1 scores saved: {f1_scores_file}")
+        
+    else:
+        print("\n📊 no model needs update, all existing models are better")
+        # even if no model needs update, save F1 scores (including existing)
+        if f1_scores_to_save:
+            f1_scores_file = f"{save_path}model_f1_scores.pkl"
+            with open(f1_scores_file, 'wb') as f:
+                pickle.dump(f1_scores_to_save, f)
+            print(f"✅ F1 scores updated: {f1_scores_file}")
 
 def load_trained_models(load_path="trained_models/"):
     """
@@ -1996,13 +1822,14 @@ def load_trained_models(load_path="trained_models/"):
     
     return models_dict, scaler, optimal_thresholds
 
-def process_new_lmp_data_complete(da_file, rt_file, output_path="processed_new_data/"):
+def process_new_lmp_data_complete(da_file, rt_file, weather_file=None, output_path="processed_new_data/"):
     """
     process new LMP data (complete version: directly process time series data, similar to all_data in training)
     
     Parameters:
     - da_file: DA LMP data file path
     - rt_file: RT LMP data file path
+    - weather_file: weather data file path (optional)
     - output_path: output path
     """
     import os
@@ -2061,7 +1888,7 @@ def process_new_lmp_data_complete(da_file, rt_file, output_path="processed_new_d
         
         # show hour distribution
         hour_counts = combined_lmp['hourTime'].value_counts()
-        print(f"hour distribution:
+        print(f"hour distribution: {hour_counts}")
         
     except Exception as e:
         print(f"⚠️ time parsing failed: {e}")
@@ -2086,7 +1913,7 @@ def process_new_lmp_data_complete(da_file, rt_file, output_path="processed_new_d
     hour_cols = [f'hour_{h}' for h in all_hours]
     combined_lmp = pd.concat([combined_lmp, hour_dummies[hour_cols]], axis=1)
     
-    # add weather features (using default values, because new data time span is short)
+    # add weather features (using actual weather data if provided)
     print("add weather features...")
     weather_cols = [
         'apparent_temperature (°C)', 
@@ -2096,19 +1923,77 @@ def process_new_lmp_data_complete(da_file, rt_file, output_path="processed_new_d
         'soil_moisture_0_to_7cm (m³/m³)'
     ]
     
-    # use reasonable default values (based on historical average)
-    default_weather_values = {
-        'apparent_temperature (°C)': 15.0,  # 15 degrees
-        'wind_gusts_10m (km/h)': 20.0,      # 20 km/h
-        'pressure_msl (hPa)': 1013.25,      # standard atmospheric pressure
-        'soil_temperature_0_to_7cm (°C)': 12.0,  # 12 degrees
-        'soil_moisture_0_to_7cm (m³/m³)': 0.3    # 30%
-    }
-    
-    for col in weather_cols:
-        combined_lmp[col] = default_weather_values[col]
-    
-    print("✅ weather features added (using default values)")
+    if weather_file and os.path.exists(weather_file):
+        try:
+            # read weather data
+            if weather_file.endswith('.pkl'):
+                weather_data = pd.read_pickle(weather_file)
+            else:
+                weather_data = pd.read_csv(weather_file)
+            
+            print(f"load weather data: {len(weather_data)} rows")
+            
+            # parse weather data time
+            weather_data['datetime_parsed'] = pd.to_datetime(weather_data['time'])
+            weather_data['datetime_rounded'] = weather_data['datetime_parsed'].dt.round('H')
+            
+            # parse LMP data time and round to hour
+            combined_lmp['datetime_rounded'] = pd.to_datetime(combined_lmp['datetime_beginning_utc']).dt.round('H')
+            
+            # create weather data lookup dictionary
+            weather_lookup = {}
+            for _, row in weather_data.iterrows():
+                time_key = row['datetime_rounded']
+                weather_lookup[time_key] = {col: row[col] for col in weather_cols if col in row}
+            
+            # match weather data for each LMP row
+            for col in weather_cols:
+                combined_lmp[col] = 0  # initialize
+            
+            matched_count = 0
+            for idx, row in combined_lmp.iterrows():
+                time_key = row['datetime_rounded']
+                if time_key in weather_lookup:
+                    for col in weather_cols:
+                        if col in weather_lookup[time_key]:
+                            combined_lmp.loc[idx, col] = weather_lookup[time_key][col]
+                    matched_count += 1
+                else:
+                    # if no exact match, use nearest weather data
+                    if weather_lookup:
+                        closest_time = min(weather_lookup.keys(), key=lambda x: abs((x - time_key).total_seconds()))
+                        for col in weather_cols:
+                            if col in weather_lookup[closest_time]:
+                                combined_lmp.loc[idx, col] = weather_lookup[closest_time][col]
+            
+            print(f"✅ weather features added: {matched_count}/{len(combined_lmp)} records exact match")
+            
+        except Exception as e:
+            print(f"⚠️ read weather data failed: {e}")
+            print("use default weather values...")
+            # use default values as fallback
+            default_weather_values = {
+                'apparent_temperature (°C)': 15.0,
+                'wind_gusts_10m (km/h)': 20.0,
+                'pressure_msl (hPa)': 1013.25,
+                'soil_temperature_0_to_7cm (°C)': 12.0,
+                'soil_moisture_0_to_7cm (m³/m³)': 0.3
+            }
+            for col, val in default_weather_values.items():
+                combined_lmp[col] = val
+    else:
+        print("⚠️ no weather file provided, use default values")
+        # use reasonable default values (based on historical average)
+        default_weather_values = {
+            'apparent_temperature (°C)': 15.0,  # 15 degrees
+            'wind_gusts_10m (km/h)': 20.0,      # 20 km/h
+            'pressure_msl (hPa)': 1013.25,      # standard atmospheric pressure
+            'soil_temperature_0_to_7cm (°C)': 12.0,  # 12 degrees
+            'soil_moisture_0_to_7cm (m³/m³)': 0.3    # 30%
+        }
+        for col, val in default_weather_values.items():
+            combined_lmp[col] = val
+        print("✅ weather features added (using default values)")
     
     # add other features
     print("add other features...")
@@ -2121,8 +2006,8 @@ def process_new_lmp_data_complete(da_file, rt_file, output_path="processed_new_d
     
     # add lag features (similar to training)
     combined_lmp['lagged_lmp_da'] = combined_lmp['total_lmp_da'].shift(1).fillna(combined_lmp['total_lmp_da'].iloc[0])
-    combined_lmp['lagged_lmp_rt'] = combined_lmp['total_lmp_rt'].shift(1).fillna(combined_lmp['total_lmp_rt'].iloc[0])
-    combined_lmp['lagged_delta'] = combined_lmp['total_lmp_delta'].shift(1).fillna(0)
+    # remove information leakage features: lagged_lmp_rt and lagged_delta
+    # because RT data is not available at prediction time
     
     # add multiple lag features (if used in training)
     k = 7  # similar to training
@@ -2241,7 +2126,7 @@ def validate_model_with_new_data(processed_data_path="processed_new_data/",
             print(f"⚠️ cannot get feature order from scaler: {e}")
             # alternative: manually specify exact order as in training
             inputs = [
-                'lagged_lmp_da', 'lagged_delta',
+                'lagged_lmp_da',  # 只保留DA的滞后特征，移除lagged_delta避免信息泄漏
                 'apparent_temperature (°C)', 'wind_gusts_10m (km/h)', 'pressure_msl (hPa)',
                 'soil_temperature_0_to_7cm (°C)', 'soil_moisture_0_to_7cm (m³/m³)',
                 'isHoliday',
@@ -2452,8 +2337,6 @@ else:
     print("\nthird step: process new LMP data")
     
     # use complete processing function (using actual weather data)
-    exec(open('test_new_processing.py').read().split('if __name__')[0])  # import function definition
-    
     processed_data = process_new_lmp_data_complete(
         da_file="applicationData/da_hrl_lmps_2025.csv",
         rt_file="applicationData/rt_hrl_lmps_2025.csv",
