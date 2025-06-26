@@ -1607,8 +1607,8 @@ def process_meteo_weather_for_hourly_files(weather_data_path, output_path="hourl
 # Download weather data for 2025
 '''
 weather_data = download_weather_data_from_meteo(
-    start_date="2025-01-01",
-    end_date="2025-06-06"
+    start_date="2024-01-01",
+    end_date="2024-12-31"
 )
 '''
 
