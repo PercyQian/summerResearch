@@ -3,7 +3,7 @@
 """
 Electricity market anomaly detection model
 
-Use 2024 data to train, 2025 data to test
+Use 2022,2023,2024 data to train, 2025 data to test
 
 Based on relative difference |RT-DA|/|RT| to detect electricity market unexpected situations
 """
@@ -14,9 +14,11 @@ import os
 import datetime as dt
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, precision_recall_curve
 from xgboost import XGBClassifier
+import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -62,14 +64,14 @@ def apply_holiday_features(data, holiday_list):
     data['isHoliday'] = data['datetime_beginning_utc'].dt.date.isin(holiday_dates).astype(int)
     return data
 
-def load_and_process_lmp_data(da_file, rt_file, weather_file=None):
+def load_and_process_lmp_data(da_file, rt_file, weather_dir=None):
     """
     load and process LMP data
     
     Parameters:
     - da_file: path to day-ahead LMP data file
     - rt_file: path to real-time LMP data file  
-    - weather_file: path to weather data file (optional)
+    - weather_dir: path to the directory containing weather data files (optional)
     
     Returns:
     - processed_data: processed data DataFrame
@@ -128,49 +130,88 @@ def load_and_process_lmp_data(da_file, rt_file, weather_file=None):
     # --- end new feature engineering ---
     
     # add weather features (if weather data is provided)
-    if weather_file and os.path.exists(weather_file):
-        try:
-            print(f"add weather features from {weather_file}...")
-            weather_data = pd.read_pickle(weather_file)
+    if weather_dir and os.path.isdir(weather_dir):
+        print(f"add weather features from {weather_dir}...")
+        
+        combined_data['datetime_rounded'] = combined_data['datetime_beginning_utc'].dt.round('H')
+        
+        weather_cols_mapping = {
+            'apparent_temperature (°C)': 'temp',
+            'wind_gusts_10m (km/h)': 'wind',
+            'pressure_msl (hPa)': 'pressure',
+            'soil_temperature_0_to_7cm (°C)': 'soil_temp',
+            'soil_moisture_0_to_7cm (m³/m³)': 'soil_moisture'
+        }
+        
+        all_weather_dfs = []
+        for weather_file in os.listdir(weather_dir):
+            if weather_file.endswith(".pkl"):
+                zone_name = weather_file.split('_')[0]
+                weather_file_path = os.path.join(weather_dir, weather_file)
+                try:
+                    weather_data = pd.read_pickle(weather_file_path)
+                    if 'time' not in weather_data.columns:
+                        weather_data = weather_data.reset_index().rename(columns={'index': 'time'})
+                    weather_data['time'] = pd.to_datetime(weather_data['time'])
+                    weather_data['datetime_rounded'] = weather_data['time'].dt.round('H')
+                    
+                    # Keep original weather column names for now
+                    weather_data = weather_data[['datetime_rounded'] + list(weather_cols_mapping.keys())]
+                    
+                    # Prefix columns
+                    rename_dict = {col: f"{zone_name}_{col}" for col in weather_cols_mapping.keys()}
+                    weather_data.rename(columns=rename_dict, inplace=True)
+                    
+                    all_weather_dfs.append(weather_data.set_index('datetime_rounded'))
+                    
+                except Exception as e:
+                    print(f"⚠️ weather data processing failed for {weather_file}: {e}")
 
-            if 'time' not in weather_data.columns:
-                weather_data = weather_data.reset_index().rename(columns={'index': 'time'})
+        # Merge all weather dataframes at once
+        if all_weather_dfs:
+            # Using outer join to keep all timestamps
+            merged_weather = pd.concat(all_weather_dfs, axis=1, join='outer')
+            # Now merge with combined_data
+            combined_data = combined_data.set_index('datetime_rounded').join(merged_weather).reset_index()
 
-            weather_data['time'] = pd.to_datetime(weather_data['time'])
-            weather_data['datetime_rounded'] = weather_data['time'].dt.round('H')
-            
-            weather_cols = [
-                'apparent_temperature (°C)', 'wind_gusts_10m (km/h)', 'pressure_msl (hPa)',
-                'soil_temperature_0_to_7cm (°C)', 'soil_moisture_0_to_7cm (m³/m³)'
-            ]
-            
-            # Select and deduplicate weather data at hourly resolution
-            weather_hourly = weather_data[['datetime_rounded'] + weather_cols].drop_duplicates(subset=['datetime_rounded'], keep='first')
+        print(f"✅ weather features added")
 
-            # Round lmp data time to merge
-            combined_data['datetime_rounded'] = combined_data['datetime_beginning_utc'].dt.round('H')
+        # --- Create aggregated weather features ---
+        print("Creating aggregated weather features...")
+        weather_feature_cols = {}
+        for original_name, short_name in weather_cols_mapping.items():
+            weather_feature_cols[short_name] = [col for col in combined_data.columns if original_name in col]
+
+        # Temperature aggregates
+        temp_cols = weather_feature_cols['temp']
+        if temp_cols:
+            combined_data['agg_temp_mean'] = combined_data[temp_cols].mean(axis=1)
+            combined_data['agg_temp_max'] = combined_data[temp_cols].max(axis=1)
+            combined_data['agg_temp_min'] = combined_data[temp_cols].min(axis=1)
+            combined_data['agg_temp_std'] = combined_data[temp_cols].std(axis=1)
+
+        # Wind aggregates
+        wind_cols = weather_feature_cols['wind']
+        if wind_cols:
+            combined_data['agg_wind_mean'] = combined_data[wind_cols].mean(axis=1)
+            combined_data['agg_wind_max'] = combined_data[wind_cols].max(axis=1)
             
-            combined_data = pd.merge(combined_data, weather_hourly, on='datetime_rounded', how='left')
-            combined_data = combined_data.drop(columns=['datetime_rounded'])
-            
-            print(f"✅ weather features added")
-        except Exception as e:
-            print(f"⚠️ weather data processing failed: {e}")
-            # fallback to default values if processing fails
-            for col in weather_cols:
-                combined_data[col] = 15.0 # simplified default
-    
+        # Other aggregates (mean)
+        for short_name in ['pressure', 'soil_temp', 'soil_moisture']:
+            cols = weather_feature_cols[short_name]
+            if cols:
+                combined_data[f'agg_{short_name}_mean'] = combined_data[cols].mean(axis=1)
+        
+        # Drop original weather columns
+        all_original_weather_cols = [col for sublist in weather_feature_cols.values() for col in sublist]
+        combined_data.drop(columns=all_original_weather_cols, inplace=True, errors='ignore')
+        print("✅ Aggregated features created and original weather columns dropped.")
+
+
     # Fill any missing weather data (from merge or if file failed) with defaults
-    default_weather = {
-        'apparent_temperature (°C)': 15.0, 'wind_gusts_10m (km/h)': 20.0,
-        'pressure_msl (hPa)': 1013.25, 'soil_temperature_0_to_7cm (°C)': 12.0,
-        'soil_moisture_0_to_7cm (m³/m³)': 0.3
-    }
-    for col, val in default_weather.items():
-        if col in combined_data.columns:
-            combined_data[col] = combined_data[col].fillna(val)
-        else:
-            combined_data[col] = val
+    agg_weather_cols = [col for col in combined_data.columns if col.startswith('agg_')]
+    for col in agg_weather_cols:
+        combined_data[col] = combined_data[col].fillna(combined_data[col].mean())
     
     # add holiday features
     combined_data = apply_holiday_features(combined_data, holidays)
@@ -229,6 +270,7 @@ def create_anomaly_target(data, method='statistical', k=2.5, percentile=95):
         # calculate anomaly
         merged_data['abs_deviation'] = np.abs(merged_data['relative_diff'] - merged_data['mu'])
         merged_data['threshold'] = k * merged_data['sigma']
+        print(merged_data['threshold'])
         merged_data['is_anomaly'] = (merged_data['abs_deviation'] > merged_data['threshold']).astype(int)
         
         data['target'] = merged_data['is_anomaly']
@@ -266,16 +308,16 @@ def prepare_features_for_prediction(data):
         'da_roll_mean_12h', 'da_roll_std_12h',
         'da_roll_mean_24h', 'da_roll_std_24h',
         
-        # weather features
-        'apparent_temperature (°C)', 'wind_gusts_10m (km/h)', 'pressure_msl (hPa)',
-        'soil_temperature_0_to_7cm (°C)', 'soil_moisture_0_to_7cm (m³/m³)',
-        
         # time features
         'hour', 'day_of_week', 'month', 'day_of_year',
         
         # holiday features
         'isHoliday'
     ]
+    
+    # Dynamically add aggregated weather features
+    agg_weather_cols = [col for col in data.columns if col.startswith('agg_')]
+    feature_columns.extend(agg_weather_cols)
     
     # add hour one-hot encoding
     hour_cols = [f'hour_{h}' for h in range(24)]
@@ -300,15 +342,46 @@ def prepare_features_for_prediction(data):
     return available_features, X, y
 
 def train_models_2024_data():
-    """use 2024 data to train model"""
-    print("=== use 2024 data to train model ===")
+    """use 2022,2023,2024 data to train model"""
+    print("=== use 2022,2023,2024 data to train model ===")
     
-    # load 2024 data
-    train_data = load_and_process_lmp_data(
-        da_file="applicationData/da_hrl_lmps_2024.csv",
-        rt_file="applicationData/rt_hrl_lmps_2024.csv",
-        weather_file="weatherData/meteo/western_hub_weather_2024-01-01_to_2024-12-31.pkl"
-    )
+    # define multiple years data files
+    data_files = [
+        {
+            "da_file": "applicationData/da_hrl_lmps_2022.csv",
+            "rt_file": "applicationData/rt_hrl_lmps_2022.csv",
+            "weather_dir": "weatherData/meteo/"
+        },
+        {
+            "da_file": "applicationData/da_hrl_lmps_2023.csv",
+            "rt_file": "applicationData/rt_hrl_lmps_2023.csv",
+            "weather_dir": "weatherData/meteo/"
+        },
+        {
+            "da_file": "applicationData/da_hrl_lmps_2024.csv",
+            "rt_file": "applicationData/rt_hrl_lmps_2024.csv",
+            "weather_dir": "weatherData/meteo/"
+        }
+    ]
+    
+    # load and merge all data
+    all_train_data = []
+    for files in data_files:
+        print(f"\nLoading data for {files['da_file']}...")
+        data = load_and_process_lmp_data(
+            da_file=files["da_file"],
+            rt_file=files["rt_file"],
+            weather_dir=files["weather_dir"]
+        )
+        if data is not None:
+            all_train_data.append(data)
+    
+    if not all_train_data:
+        print("❌ No training data loaded. Exiting.")
+        return None, None, None, None
+
+    train_data = pd.concat(all_train_data, ignore_index=True)
+    print(f"\nTotal training data rows after combining all years: {len(train_data)}")
     
     # create anomaly target variable
     train_data = create_anomaly_target(train_data, method='statistical', k=2.5)
@@ -320,19 +393,45 @@ def train_models_2024_data():
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     
-    print(f"training set feature shape: {X_train_scaled.shape}")
-    print(f"training set target distribution: {pd.Series(y_train).value_counts().to_dict()}")
+    # Split training data into a new training set and a validation set for threshold tuning
+    X_train_split, X_val, y_train_split, y_val = train_test_split(
+        X_train_scaled, y_train, test_size=0.2, random_state=42, stratify=y_train)
+
+    print(f"training set feature shape: {X_train_split.shape}")
+    print(f"training set target distribution: {pd.Series(y_train_split).value_counts().to_dict()}")
+    print(f"validation set feature shape: {X_val.shape}")
+    print(f"validation set target distribution: {pd.Series(y_val).value_counts().to_dict()}")
+
+    # --- RandomForest Hyperparameter Tuning with GridSearchCV ---
+    print("\n--- Tuning RandomForest hyperparameters with GridSearchCV ---")
     
+    # Define the parameter grid to search
+    param_grid_rf = {
+        'n_estimators': [100, 200],
+        'max_depth': [10, 20, None],
+        'min_samples_split': [2, 5],
+        'min_samples_leaf': [1, 2],
+        'class_weight': ['balanced', 'balanced_subsample']
+    }
+
+    # Create a GridSearchCV object
+    rf = RandomForestClassifier(random_state=42)
+    # Using scoring='f1' is crucial for imbalanced classes
+    # Using cv=3 for a balance between robustness and speed
+    grid_search_rf = GridSearchCV(estimator=rf, param_grid=param_grid_rf, 
+                                  scoring='f1', cv=3, n_jobs=-1, verbose=2)
+
+    # Fit the grid search to the new, smaller training set
+    grid_search_rf.fit(X_train_split, y_train_split)
+
+    print("\nBest parameters found for RandomForest:")
+    print(grid_search_rf.best_params_)
+
+    # Get the best model from the grid search
+    best_rf_model = grid_search_rf.best_estimator_
+
     # train multiple models
     models = {
-        'RandomForest': RandomForestClassifier(
-            n_estimators=50,
-            max_depth=5,
-            min_samples_split=10,
-            min_samples_leaf=5,
-            class_weight='balanced',
-            random_state=42
-        ),
         'XGBoost': XGBClassifier(
             n_estimators=100,
             max_depth=3,
@@ -350,21 +449,32 @@ def train_models_2024_data():
         )
     }
     
-    trained_models = {}
+    # Start the dictionary of trained models with the optimized RandomForest
+    trained_models = {'RandomForest': best_rf_model}
     
     for name, model in models.items():
         print(f"\ntrain {name}...")
-        model.fit(X_train_scaled, y_train)
+        # Train on the split training data
+        model.fit(X_train_split, y_train_split)
         
         # calculate training set performance
-        train_score = model.score(X_train_scaled, y_train)
+        train_score = model.score(X_train_split, y_train_split)
         print(f"{name} training set accuracy: {train_score:.3f}")
         
         trained_models[name] = model
-    
-    return trained_models, scaler, feature_columns, train_data
 
-def test_models_2025_data(trained_models, scaler, feature_columns):
+    # --- Find optimal thresholds on the validation set ---
+    print("\n--- Finding optimal prediction thresholds on validation set ---")
+    optimal_thresholds = {}
+    for name, model in trained_models.items():
+        print(f"Finding threshold for {name}...")
+        y_val_proba = model.predict_proba(X_val)[:, 1]
+        optimal_threshold = find_optimal_threshold(y_val, y_val_proba, model_name=name)
+        optimal_thresholds[name] = optimal_threshold
+    
+    return trained_models, scaler, feature_columns, train_data, optimal_thresholds
+
+def test_models_2025_data(trained_models, scaler, feature_columns, optimal_thresholds):
     """use 2025 data to test model"""
     print("\n=== use 2025 data to test model ===")
     
@@ -372,7 +482,7 @@ def test_models_2025_data(trained_models, scaler, feature_columns):
     test_data = load_and_process_lmp_data(
         da_file="applicationData/da_hrl_lmps_2025.csv",
         rt_file="applicationData/rt_hrl_lmps_2025.csv",
-        weather_file="weatherData/meteo/western_hub_weather_2025-01-01_to_2025-06-06.pkl"
+        weather_dir="weatherData/meteo/"
     )
     
     # create anomaly target variable (using same method)
@@ -400,10 +510,16 @@ def test_models_2025_data(trained_models, scaler, feature_columns):
     for name, model in trained_models.items():
         print(f"\ntest {name}...")
         
-        # predict
-        y_pred = model.predict(X_test_scaled)
+        # predict using probabilities and the optimal threshold
         y_pred_proba = model.predict_proba(X_test_scaled)[:, 1] if hasattr(model, 'predict_proba') else None
         
+        if y_pred_proba is not None:
+            threshold = optimal_thresholds.get(name, 0.5)
+            print(f"  Using optimal threshold: {threshold:.4f}")
+            y_pred = (y_pred_proba >= threshold).astype(int)
+        else:
+            y_pred = model.predict(X_test_scaled)
+
         # calculate evaluation metrics
         accuracy = accuracy_score(y_test, y_pred)
         precision = precision_score(y_test, y_pred, zero_division=0)
@@ -431,6 +547,35 @@ def test_models_2025_data(trained_models, scaler, feature_columns):
         }
     
     return results, test_data
+
+def find_optimal_threshold(y_true, y_pred_proba, model_name=""):
+    """
+    Find the optimal prediction threshold for a model
+    """
+    precisions, recalls, thresholds = precision_recall_curve(y_true, y_pred_proba)
+    # F1 score for each threshold
+    f1_scores = (2 * precisions * recalls) / (precisions + recalls)
+    # locate the index of the largest f1 score
+    f1_scores = np.nan_to_num(f1_scores) # handle division by zero
+    best_f1_idx = np.argmax(f1_scores)
+    best_threshold = thresholds[best_f1_idx]
+    
+    print(f"  Best Threshold={best_threshold:.4f}, F1-Score={f1_scores[best_f1_idx]:.4f}")
+
+    # plot the roc curve for the model
+    plt.figure(figsize=(8, 6))
+    plt.plot(thresholds, precisions[:-1], 'b--', label='Precision')
+    plt.plot(thresholds, recalls[:-1], 'g-', label='Recall')
+    plt.plot(thresholds, f1_scores[:-1], 'r-', label='F1 Score')
+    plt.axvline(x=best_threshold, color='purple', linestyle='--', label=f'Optimal Threshold ({best_threshold:.4f})')
+    plt.xlabel('Threshold')
+    plt.ylabel('Score')
+    plt.title(f'Precision, Recall, and F1 Score vs. Threshold for {model_name}')
+    plt.legend()
+    plt.show()
+
+    return best_threshold
+
 
 def analyze_prediction_patterns(test_data, results):
     """analyze prediction patterns and anomalies"""
@@ -467,16 +612,52 @@ def analyze_prediction_patterns(test_data, results):
         date_str = row['datetime_beginning_utc'].strftime('%Y-%m-%d %H:%M')
         print(f"  {date_str}: relative difference={row['relative_diff']:.4f}, DA=${row['total_lmp_da']:.2f}, RT=${row['total_lmp_rt']:.2f}")
 
+def plot_feature_importance(model, feature_names, top_n=30, model_name=""):
+    """
+    Plots the feature importance of a trained model.
+    """
+    if hasattr(model, 'feature_importances_'):
+        importances = model.feature_importances_
+    elif hasattr(model, 'coef_'):
+        importances = np.abs(model.coef_[0])  # For binary classification
+    else:
+        print(f"Model {model_name} does not support feature importance.")
+        return
+    
+    # Use numpy array for easier indexing
+    feature_names = np.array(feature_names)
+    indices = np.argsort(importances)[-top_n:]
+    
+    plt.figure(figsize=(12, 10))
+    plt.title(f'Top {top_n} Feature Importances for {model_name}')
+    plt.barh(range(len(indices)), importances[indices], color='maroon', align='center')
+    plt.yticks(range(len(indices)), feature_names[indices])
+    plt.xlabel('Relative Importance')
+    plt.tight_layout()
+    plt.show()
+
+    # Print the top N features
+    print(f"\nTop {top_n} most important features for {model_name}:")
+    for i in np.argsort(importances)[::-1][:top_n]:
+        print(f"- {feature_names[i]}: {importances[i]:.4f}")
+
+
 def main():
     """main function"""
     try:
         print("🚀 start electricity market anomaly detection model training and testing")
         
         # 1. train model
-        trained_models, scaler, feature_columns, train_data = train_models_2024_data()
+        trained_models, scaler, feature_columns, train_data, optimal_thresholds = train_models_2024_data()
+        
+        # Plot feature importance for all models
+        for name, model in trained_models.items():
+            if feature_columns:
+                print(f"\n--- Plotting {name} Feature Importance ---")
+                plot_feature_importance(model, feature_columns, top_n=30, model_name=name)
         
         # 2. test model  
-        test_results, test_data = test_models_2025_data(trained_models, scaler, feature_columns)
+        test_results, test_data = test_models_2025_data(trained_models, scaler, feature_columns, optimal_thresholds)
         
         # 3. analyze results
         analyze_prediction_patterns(test_data, test_results)

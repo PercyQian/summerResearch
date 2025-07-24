@@ -1415,17 +1415,23 @@ import json
 from datetime import datetime, timedelta
 import time
 
-def get_western_hub_coordinates():
-    """
-    Penn's approximate location
-    """
-    return {
-        'latitude': 40.9,   # penn's approximate location
-        'longitude': -77.3, # penn's approximate location
-        'location_name': 'Western_Hub_PA'
-    }
+zone_coords = {
+    'AE':    (39.3643,  -74.4229),
+    'BGE':   (39.2904,  -76.6122),
+    'DPL':   (39.1582,  -75.5244),
+    'JCPL':  (40.2171,  -74.7429),
+    'METED': (40.3356,  -75.9269),
+    'PECO':  (39.9526,  -75.1652),
+    'PPL':   (40.6084,  -75.4902),
+    'PEPCO': (38.9072,  -77.0369),
+    'DOM':   (37.5407,  -77.4360),
+    'APS':   (38.3498,  -81.6326),
+    'PENELEC':(41.4089, -75.6624),
+    'PSEG':  (40.7357,  -74.1724),
+    'RECO':  (41.1486,  -73.9881),
+}
 
-def download_weather_data_from_meteo(start_date, end_date, save_path="weatherData/meteo/"):
+def download_weather_data_from_meteo(start_date, end_date, latitude, longitude, location_name, save_path="weatherData/meteo/"):
     """
     Download weather data for Western Hub from Open-Meteo API
     
@@ -1438,15 +1444,14 @@ def download_weather_data_from_meteo(start_date, end_date, save_path="weatherDat
     if not os.path.exists(save_path):
         os.makedirs(save_path)
     
-    coords = get_western_hub_coordinates()
     
     # Open-Meteo API URL
     base_url = "https://archive-api.open-meteo.com/v1/archive"
     
     # request parameters
     params = {
-        'latitude': coords['latitude'],
-        'longitude': coords['longitude'],
+        'latitude': latitude,
+        'longitude': longitude,
         'start_date': start_date,
         'end_date': end_date,
         'hourly': [
@@ -1461,7 +1466,7 @@ def download_weather_data_from_meteo(start_date, end_date, save_path="weatherDat
     }
     
     print(f"Downloading weather data from Open-Meteo for {start_date} to {end_date}...")
-    print(f"Location: latitude {coords['latitude']}, longitude {coords['longitude']}")
+    print(f"Location: {location_name} (latitude {latitude}, longitude {longitude})")
     
     try:
         # send API request
@@ -1483,11 +1488,11 @@ def download_weather_data_from_meteo(start_date, end_date, save_path="weatherDat
                 df[f'{variable} ({weather_data["hourly_units"][variable]})'] = weather_data['hourly'][variable]
         
         # save data
-        filename = f"{save_path}western_hub_weather_{start_date}_to_{end_date}.csv"
+        filename = f"{save_path}{location_name}_weather_{start_date}_to_{end_date}.csv"
         df.to_csv(filename, index=False)
         
         # also save as pickle format
-        pickle_filename = f"{save_path}western_hub_weather_{start_date}_to_{end_date}.pkl"
+        pickle_filename = f"{save_path}{location_name}_weather_{start_date}_to_{end_date}.pkl"
         df.to_pickle(pickle_filename)
         
         print(f"Weather data saved to:")
@@ -1505,73 +1510,28 @@ def download_weather_data_from_meteo(start_date, end_date, save_path="weatherDat
         print(f"Error processing weather data: {e}")
         return None
 
-def download_weather_by_months(start_year, start_month, end_year, end_month, save_path="weatherData/meteo/"):
+def download_weather_for_all_zones(start_date, end_date, base_save_path="weatherData/meteo/"):
     """
-    Download weather data by months (to avoid too much data in one request)
+    Download weather data for all zones for a given date range.
     
     Parameters:
-    - start_year: start year
-    - start_month: start month
-    - end_year: end year
-    - end_month: end month
+    - start_date: start date (format: 'YYYY-MM-DD')
+    - end_date: end date (format: 'YYYY-MM-DD')
+    - base_save_path: base directory to save all zone data
     """
-    current_year = start_year
-    current_month = start_month
-    
-    all_data = []
-    
-    while (current_year < end_year) or (current_year == end_year and current_month <= end_month):
-        # calculate start and end date of the month
-        start_date = f"{current_year}-{current_month:02d}-01"
+    for zone_name, (lat, lon) in zone_coords.items():
+        print(f"\n--- Starting download for zone: {zone_name} ---")
+        zone_save_path = os.path.join(base_save_path, zone_name)
         
-        # calculate last day of the month
-        if current_month == 12:
-            next_year = current_year + 1
-            next_month = 1
-        else:
-            next_year = current_year
-            next_month = current_month + 1
-        
-        last_day = (datetime(next_year, next_month, 1) - timedelta(days=1)).day
-        end_date = f"{current_year}-{current_month:02d}-{last_day:02d}"
-        
-        print(f"\nDownloading data from {start_date} to {end_date}...")
-        
-        # download data of the month
-        monthly_data = download_weather_data_from_meteo(start_date, end_date, save_path)
-        
-        if monthly_data is not None:
-            all_data.append(monthly_data)
-            
-        # add delay to avoid API limit
-        time.sleep(1)
-        
-        # move to next month
-        if current_month == 12:
-            current_year += 1
-            current_month = 1
-        else:
-            current_month += 1
-    
-    # merge all months data
-    if all_data:
-        combined_data = pd.concat(all_data, axis=0, ignore_index=True)
-        
-        # save merged data
-        combined_filename = f"{save_path}western_hub_weather_{start_year}_{start_month:02d}_to_{end_year}_{end_month:02d}_combined.csv"
-        combined_data.to_csv(combined_filename, index=False)
-        
-        combined_pickle = f"{save_path}western_hub_weather_{start_year}_{start_month:02d}_to_{end_year}_{end_month:02d}_combined.pkl"
-        combined_data.to_pickle(combined_pickle)
-        
-        print(f"\nAll data merged and saved:")
-        print(f"  CSV: {combined_filename}")
-        print(f"  Pickle: {combined_pickle}")
-        print(f"Total number of rows: {len(combined_data)}")
-        
-        return combined_data
-    
-    return None
+        download_weather_data_from_meteo(
+            start_date=start_date, 
+            end_date=end_date, 
+            latitude=lat, 
+            longitude=lon, 
+            location_name=zone_name, 
+            save_path=zone_save_path
+        )
+        print(f"--- Finished download for zone: {zone_name} ---")
 
 def process_meteo_weather_for_hourly_files(weather_data_path, output_path="hourlyWeatherData/meteo/"):
     """
@@ -1604,13 +1564,10 @@ def process_meteo_weather_for_hourly_files(weather_data_path, output_path="hourl
 # %%
 # Useage
 
-# Download weather data for 2025
-'''
-weather_data = download_weather_data_from_meteo(
-    start_date="2024-01-01",
-    end_date="2024-12-31"
-)
-'''
+# Download weather data for 2022-2025
+
+download_weather_for_all_zones(start_date="2022-01-01", end_date="2025-06-06")
+
 
 # %%
 # save trained
@@ -2359,5 +2316,69 @@ else:
         print("❌ new data processing failed")
 
 
+
+# %%
+import pandas as pd
+
+#file_path = 'raw_data/rt_hrl_lmps_2022.csv'
+#file_path = 'raw_data/rt_hrl_lmps_2023_1-6.csv'
+#file_path = 'raw_data/da_hrl_lmps_2023_1-6.csv'
+file_path = 'raw_data/da_hrl_lmps_2022.csv'
+
+print(f"reading data from {file_path}...")
+try:
+    # The head output shows some formatting issues. Let's try to be robust.
+    df = pd.read_csv(file_path, skipinitialspace=True)
+except Exception as e:
+    print(f"error reading CSV: {e}")
+    # Fallback if the first line is problematic
+    try:
+        df = pd.read_csv(file_path, skipinitialspace=True, on_bad_lines='skip')
+    except Exception as e2:
+        print(f"error reading CSV again: {e2}")
+        exit()
+
+
+print(f"original rows: {len(df)}")
+
+# The user wants to filter for pnode=51288
+# The column name is 'pnode_id'.
+pnode_to_keep = 51288
+df_filtered = df[df['pnode_id'] == pnode_to_keep]
+
+print(f"rows after filtering pnode_id {pnode_to_keep}: {len(df_filtered)}")
+
+# Overwriting the original file with the filtered data as requested.
+print(f"saving filtered data back to {file_path}...")
+df_filtered.to_csv(file_path, index=False)
+
+print("filtering completed.")
+
+# %%
+import pandas as pd
+import os
+
+# define file paths
+data_dir = 'raw_data'
+file1_path = os.path.join(data_dir, 'da_hrl_lmps_2023_1-6.csv')
+file2_path = os.path.join(data_dir, 'da_hrl_lmps_2023_7-12.csv')
+output_file_path = os.path.join(data_dir, 'da_hrl_lmps_2023.csv')
+
+print(f"reading data from {file1_path}...")
+df1 = pd.read_csv(file1_path)
+print(f"read {len(df1)} rows.")
+
+print(f"reading data from {file2_path}...")
+df2 = pd.read_csv(file2_path)
+print(f"read {len(df2)} rows.")
+
+print("merging two data frames...")
+merged_df = pd.concat([df1, df2], ignore_index=True)
+print(f"merged total rows: {len(merged_df)}")
+
+print(f"saving merged data to {output_file_path}...")
+merged_df.to_csv(output_file_path, index=False)
+
+print("file merging completed.")
 
 # %%
