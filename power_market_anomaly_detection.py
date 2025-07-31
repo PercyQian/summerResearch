@@ -64,7 +64,7 @@ def apply_holiday_features(data, holiday_list):
     data['isHoliday'] = data['datetime_beginning_utc'].dt.date.isin(holiday_dates).astype(int)
     return data
 
-def load_and_process_lmp_data(da_file, rt_file, weather_dir=None):
+def load_and_process_lmp_data(da_file, rt_file, weather_dir=None, gen_by_fuel_file=None):
     """
     load and process LMP data
     
@@ -207,6 +207,24 @@ def load_and_process_lmp_data(da_file, rt_file, weather_dir=None):
         combined_data.drop(columns=all_original_weather_cols, inplace=True, errors='ignore')
         print("✅ Aggregated features created and original weather columns dropped.")
 
+    # add generation by fuel features (if provided)
+    if gen_by_fuel_file and os.path.exists(gen_by_fuel_file):
+        print(f"=== Adding generation by fuel features from {gen_by_fuel_file} ===")
+        gen_data = pd.read_csv(gen_by_fuel_file)
+        gen_data['datetime_beginning_utc'] = pd.to_datetime(gen_data['datetime_beginning_utc'])
+        # Filter for the three fuel types
+        fuel_types = ['Coal', 'Gas', 'Nuclear']
+        filtered_gen = gen_data[gen_data['fuel_type'].isin(fuel_types)]
+        # Pivot to have percentages as columns
+        pivoted_gen = filtered_gen.pivot(index='datetime_beginning_utc', columns='fuel_type', values='fuel_percentage_of_total')
+        pivoted_gen = pivoted_gen.rename(columns={'Coal': 'coal_percentage', 'Gas': 'gas_percentage', 'Nuclear': 'nuclear_percentage'})
+        pivoted_gen = pivoted_gen.reset_index()
+        # Merge with combined_data
+        combined_data = combined_data.merge(pivoted_gen, on='datetime_beginning_utc', how='left')
+        # Fill NaN with 0 or appropriate value
+        combined_data[['coal_percentage', 'gas_percentage', 'nuclear_percentage']] = combined_data[['coal_percentage', 'gas_percentage', 'nuclear_percentage']].fillna(0)
+    else:
+        print("No gen_by_fuel_file provided or file does not exist.")
 
     # Fill any missing weather data (from merge or if file failed) with defaults
     agg_weather_cols = [col for col in combined_data.columns if col.startswith('agg_')]
@@ -270,7 +288,10 @@ def create_anomaly_target(data, method='statistical', k=2.5, percentile=95):
         # calculate anomaly
         merged_data['abs_deviation'] = np.abs(merged_data['relative_diff'] - merged_data['mu'])
         merged_data['threshold'] = k * merged_data['sigma']
+        print(merged_data['sigma'])
         print(merged_data['threshold'])
+        print(merged_data['mu'])  # 添加打印mu值
+        merged_data[['mu', 'threshold']].to_csv('mu_threshold.csv', index=False)  # 保存到CSV文件
         merged_data['is_anomaly'] = (merged_data['abs_deviation'] > merged_data['threshold']).astype(int)
         
         data['target'] = merged_data['is_anomaly']
@@ -312,7 +333,10 @@ def prepare_features_for_prediction(data):
         'hour', 'day_of_week', 'month', 'day_of_year',
         
         # holiday features
-        'isHoliday'
+        'isHoliday',
+        
+        # generation by fuel features
+        'coal_percentage', 'gas_percentage', 'nuclear_percentage'
     ]
     
     # Dynamically add aggregated weather features
@@ -350,17 +374,20 @@ def train_models_2024_data():
         {
             "da_file": "applicationData/da_hrl_lmps_2022.csv",
             "rt_file": "applicationData/rt_hrl_lmps_2022.csv",
-            "weather_dir": "weatherData/meteo/"
+            "weather_dir": "weatherData/meteo/",
+            "gen_by_fuel_file": "applicationData/gen_by_fuel_2022.csv"
         },
         {
             "da_file": "applicationData/da_hrl_lmps_2023.csv",
             "rt_file": "applicationData/rt_hrl_lmps_2023.csv",
-            "weather_dir": "weatherData/meteo/"
+            "weather_dir": "weatherData/meteo/",
+            "gen_by_fuel_file": "applicationData/gen_by_fuel_2023.csv"
         },
         {
             "da_file": "applicationData/da_hrl_lmps_2024.csv",
             "rt_file": "applicationData/rt_hrl_lmps_2024.csv",
-            "weather_dir": "weatherData/meteo/"
+            "weather_dir": "weatherData/meteo/",
+            "gen_by_fuel_file": "applicationData/gen_by_fuel_2024.csv"
         }
     ]
     
@@ -371,7 +398,8 @@ def train_models_2024_data():
         data = load_and_process_lmp_data(
             da_file=files["da_file"],
             rt_file=files["rt_file"],
-            weather_dir=files["weather_dir"]
+            weather_dir=files["weather_dir"],
+            gen_by_fuel_file=files.get("gen_by_fuel_file")
         )
         if data is not None:
             all_train_data.append(data)
@@ -482,7 +510,8 @@ def test_models_2025_data(trained_models, scaler, feature_columns, optimal_thres
     test_data = load_and_process_lmp_data(
         da_file="applicationData/da_hrl_lmps_2025.csv",
         rt_file="applicationData/rt_hrl_lmps_2025.csv",
-        weather_dir="weatherData/meteo/"
+        weather_dir="weatherData/meteo/",
+        gen_by_fuel_file="applicationData/gen_by_fuel_2025.csv"
     )
     
     # create anomaly target variable (using same method)
