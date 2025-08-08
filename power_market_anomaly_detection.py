@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 import os
 import datetime as dt
+import seaborn as sns
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GridSearchCV, train_test_split
@@ -21,6 +22,7 @@ from xgboost import XGBClassifier
 import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
+import shap
 
 # holiday definition
 holidays = [
@@ -64,7 +66,7 @@ def apply_holiday_features(data, holiday_list):
     data['isHoliday'] = data['datetime_beginning_utc'].dt.date.isin(holiday_dates).astype(int)
     return data
 
-def load_and_process_lmp_data(da_file, rt_file, weather_dir=None, gen_by_fuel_file=None):
+def load_and_process_lmp_data(da_file, rt_file, weather_dir=None):
     """
     load and process LMP data
     
@@ -113,7 +115,7 @@ def load_and_process_lmp_data(da_file, rt_file, weather_dir=None, gen_by_fuel_fi
     combined_data['lmp_diff'] = combined_data['total_lmp_rt'] - combined_data['total_lmp_da']
     combined_data['abs_rt'] = np.abs(combined_data['total_lmp_rt'])
     combined_data['abs_rt'] = np.where(combined_data['abs_rt'] < 1e-6, 1e-6, combined_data['abs_rt'])
-    combined_data['relative_diff'] = np.abs(combined_data['lmp_diff']) / combined_data['abs_rt']
+    combined_data['relative_diff'] = combined_data['lmp_diff'] / combined_data['abs_rt']
     
     # add historical price lag features (1-7 days ago DA price)
     for lag in range(1, 8):
@@ -207,24 +209,6 @@ def load_and_process_lmp_data(da_file, rt_file, weather_dir=None, gen_by_fuel_fi
         combined_data.drop(columns=all_original_weather_cols, inplace=True, errors='ignore')
         print("✅ Aggregated features created and original weather columns dropped.")
 
-    # add generation by fuel features (if provided)
-    if gen_by_fuel_file and os.path.exists(gen_by_fuel_file):
-        print(f"=== Adding generation by fuel features from {gen_by_fuel_file} ===")
-        gen_data = pd.read_csv(gen_by_fuel_file)
-        gen_data['datetime_beginning_utc'] = pd.to_datetime(gen_data['datetime_beginning_utc'])
-        # Filter for the three fuel types
-        fuel_types = ['Coal', 'Gas', 'Nuclear']
-        filtered_gen = gen_data[gen_data['fuel_type'].isin(fuel_types)]
-        # Pivot to have percentages as columns
-        pivoted_gen = filtered_gen.pivot(index='datetime_beginning_utc', columns='fuel_type', values='fuel_percentage_of_total')
-        pivoted_gen = pivoted_gen.rename(columns={'Coal': 'coal_percentage', 'Gas': 'gas_percentage', 'Nuclear': 'nuclear_percentage'})
-        pivoted_gen = pivoted_gen.reset_index()
-        # Merge with combined_data
-        combined_data = combined_data.merge(pivoted_gen, on='datetime_beginning_utc', how='left')
-        # Fill NaN with 0 or appropriate value
-        combined_data[['coal_percentage', 'gas_percentage', 'nuclear_percentage']] = combined_data[['coal_percentage', 'gas_percentage', 'nuclear_percentage']].fillna(0)
-    else:
-        print("No gen_by_fuel_file provided or file does not exist.")
 
     # Fill any missing weather data (from merge or if file failed) with defaults
     agg_weather_cols = [col for col in combined_data.columns if col.startswith('agg_')]
@@ -286,28 +270,34 @@ def create_anomaly_target(data, method='statistical', k=2.5, percentile=95):
         merged_data['sigma'] = merged_data['sigma'].fillna(global_sigma)
         
         # calculate anomaly
-        merged_data['abs_deviation'] = np.abs(merged_data['relative_diff'] - merged_data['mu'])
+        merged_data['deviation'] = merged_data['relative_diff'] - merged_data['mu']
         merged_data['threshold'] = k * merged_data['sigma']
-        print(merged_data['sigma'])
-        print(merged_data['threshold'])
-        print(merged_data['mu'])  # 添加打印mu值
-        merged_data[['mu', 'threshold']].to_csv('mu_threshold.csv', index=False)  # 保存到CSV文件
-        merged_data['is_anomaly'] = (merged_data['abs_deviation'] > merged_data['threshold']).astype(int)
+        merged_data['sum']=merged_data['mu'] + merged_data['threshold']
+        merged_data['difference']=merged_data['mu']- merged_data['threshold']
+        merged_data[['mu', 'threshold','relative_diff','sum','difference']].to_csv('mu_threshold.csv', index=False)  # save to csv
+        merged_data['target'] = 0
+        merged_data.loc[merged_data['deviation'] > merged_data['threshold'], 'target'] = 1  # high anomaly
+        merged_data.loc[merged_data['deviation'] < -merged_data['threshold'], 'target'] = 2  # low anomaly
         
-        data['target'] = merged_data['is_anomaly']
+        data['target'] = merged_data['target']
         
     else:  # percentile method
         print(f"=== use percentile method to define anomaly ({percentile}th percentile) ===")
         
-        threshold = np.percentile(data['relative_diff'], percentile)
-        data['target'] = (data['relative_diff'] >= threshold).astype(int)
+        threshold_high = np.percentile(data['relative_diff'], percentile)
+        threshold_low = np.percentile(data['relative_diff'], 100 - percentile)
+        data['target'] = 0
+        data.loc[data['relative_diff'] >= threshold_high, 'target'] = 1
+        data.loc[data['relative_diff'] <= threshold_low, 'target'] = 2
     
     # statistical results
-    anomaly_count = data['target'].sum()
+    anomaly_count = (data['target'] != 0).sum()
+    high_count = (data['target'] == 1).sum()
+    low_count = (data['target'] == 2).sum()
     anomaly_rate = anomaly_count / len(data) * 100
     
     print(f"anomaly detection results:")
-    print(f"total anomalies: {anomaly_count}")
+    print(f"total anomalies: {anomaly_count} (high: {high_count}, low: {low_count})")
     print(f"anomaly rate: {anomaly_rate:.2f}%")
     print(f"target variable distribution: {data['target'].value_counts().to_dict()}")
     
@@ -333,10 +323,7 @@ def prepare_features_for_prediction(data):
         'hour', 'day_of_week', 'month', 'day_of_year',
         
         # holiday features
-        'isHoliday',
-        
-        # generation by fuel features
-        'coal_percentage', 'gas_percentage', 'nuclear_percentage'
+        'isHoliday'
     ]
     
     # Dynamically add aggregated weather features
@@ -374,20 +361,17 @@ def train_models_2024_data():
         {
             "da_file": "applicationData/da_hrl_lmps_2022.csv",
             "rt_file": "applicationData/rt_hrl_lmps_2022.csv",
-            "weather_dir": "weatherData/meteo/",
-            "gen_by_fuel_file": "applicationData/gen_by_fuel_2022.csv"
+            "weather_dir": "weatherData/meteo/"
         },
         {
             "da_file": "applicationData/da_hrl_lmps_2023.csv",
             "rt_file": "applicationData/rt_hrl_lmps_2023.csv",
-            "weather_dir": "weatherData/meteo/",
-            "gen_by_fuel_file": "applicationData/gen_by_fuel_2023.csv"
+            "weather_dir": "weatherData/meteo/"
         },
         {
             "da_file": "applicationData/da_hrl_lmps_2024.csv",
             "rt_file": "applicationData/rt_hrl_lmps_2024.csv",
-            "weather_dir": "weatherData/meteo/",
-            "gen_by_fuel_file": "applicationData/gen_by_fuel_2024.csv"
+            "weather_dir": "weatherData/meteo/"
         }
     ]
     
@@ -398,8 +382,7 @@ def train_models_2024_data():
         data = load_and_process_lmp_data(
             da_file=files["da_file"],
             rt_file=files["rt_file"],
-            weather_dir=files["weather_dir"],
-            gen_by_fuel_file=files.get("gen_by_fuel_file")
+            weather_dir=files["weather_dir"]
         )
         if data is not None:
             all_train_data.append(data)
@@ -420,15 +403,12 @@ def train_models_2024_data():
     # standardize features
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
-    
-    # Split training data into a new training set and a validation set for threshold tuning
-    X_train_split, X_val, y_train_split, y_val = train_test_split(
-        X_train_scaled, y_train, test_size=0.2, random_state=42, stratify=y_train)
+
+    # Use full training data for tuning and training
+    X_train_split, y_train_split = X_train_scaled, y_train
 
     print(f"training set feature shape: {X_train_split.shape}")
     print(f"training set target distribution: {pd.Series(y_train_split).value_counts().to_dict()}")
-    print(f"validation set feature shape: {X_val.shape}")
-    print(f"validation set target distribution: {pd.Series(y_val).value_counts().to_dict()}")
 
     # --- RandomForest Hyperparameter Tuning with GridSearchCV ---
     print("\n--- Tuning RandomForest hyperparameters with GridSearchCV ---")
@@ -444,12 +424,11 @@ def train_models_2024_data():
 
     # Create a GridSearchCV object
     rf = RandomForestClassifier(random_state=42)
-    # Using scoring='f1' is crucial for imbalanced classes
-    # Using cv=3 for a balance between robustness and speed
+    # Using scoring='f1_macro' for multi-class
     grid_search_rf = GridSearchCV(estimator=rf, param_grid=param_grid_rf, 
-                                  scoring='f1', cv=3, n_jobs=-1, verbose=2)
+                                  scoring='f1_macro', cv=3, n_jobs=-1, verbose=2)
 
-    # Fit the grid search to the new, smaller training set
+    # Fit the grid search to the training set
     grid_search_rf.fit(X_train_split, y_train_split)
 
     print("\nBest parameters found for RandomForest:")
@@ -466,12 +445,14 @@ def train_models_2024_data():
             learning_rate=0.1,
             subsample=0.8,
             colsample_bytree=0.8,
-            scale_pos_weight=25, # Best value from previous experiment
+            objective='multi:softmax',
+            num_class=3,
             random_state=42
         ),
         'LogisticRegression': LogisticRegression(
             C=1.0,
             class_weight='balanced',
+            multi_class='multinomial',
             max_iter=2000,
             random_state=42
         )
@@ -482,7 +463,7 @@ def train_models_2024_data():
     
     for name, model in models.items():
         print(f"\ntrain {name}...")
-        # Train on the split training data
+        # Train on the training data
         model.fit(X_train_split, y_train_split)
         
         # calculate training set performance
@@ -491,18 +472,9 @@ def train_models_2024_data():
         
         trained_models[name] = model
 
-    # --- Find optimal thresholds on the validation set ---
-    print("\n--- Finding optimal prediction thresholds on validation set ---")
-    optimal_thresholds = {}
-    for name, model in trained_models.items():
-        print(f"Finding threshold for {name}...")
-        y_val_proba = model.predict_proba(X_val)[:, 1]
-        optimal_threshold = find_optimal_threshold(y_val, y_val_proba, model_name=name)
-        optimal_thresholds[name] = optimal_threshold
-    
-    return trained_models, scaler, feature_columns, train_data, optimal_thresholds
+    return trained_models, scaler, feature_columns, train_data
 
-def test_models_2025_data(trained_models, scaler, feature_columns, optimal_thresholds):
+def test_models_2025_data(trained_models, scaler, feature_columns):
     """use 2025 data to test model"""
     print("\n=== use 2025 data to test model ===")
     
@@ -510,8 +482,7 @@ def test_models_2025_data(trained_models, scaler, feature_columns, optimal_thres
     test_data = load_and_process_lmp_data(
         da_file="applicationData/da_hrl_lmps_2025.csv",
         rt_file="applicationData/rt_hrl_lmps_2025.csv",
-        weather_dir="weatherData/meteo/",
-        gen_by_fuel_file="applicationData/gen_by_fuel_2025.csv"
+        weather_dir="weatherData/meteo/"
     )
     
     # create anomaly target variable (using same method)
@@ -539,21 +510,13 @@ def test_models_2025_data(trained_models, scaler, feature_columns, optimal_thres
     for name, model in trained_models.items():
         print(f"\ntest {name}...")
         
-        # predict using probabilities and the optimal threshold
-        y_pred_proba = model.predict_proba(X_test_scaled)[:, 1] if hasattr(model, 'predict_proba') else None
-        
-        if y_pred_proba is not None:
-            threshold = optimal_thresholds.get(name, 0.5)
-            print(f"  Using optimal threshold: {threshold:.4f}")
-            y_pred = (y_pred_proba >= threshold).astype(int)
-        else:
-            y_pred = model.predict(X_test_scaled)
+        y_pred = model.predict(X_test_scaled)
 
         # calculate evaluation metrics
         accuracy = accuracy_score(y_test, y_pred)
-        precision = precision_score(y_test, y_pred, zero_division=0)
-        recall = recall_score(y_test, y_pred, zero_division=0)
-        f1 = f1_score(y_test, y_pred, zero_division=0)
+        precision = precision_score(y_test, y_pred, average='macro', zero_division=0)
+        recall = recall_score(y_test, y_pred, average='macro', zero_division=0)
+        f1 = f1_score(y_test, y_pred, average='macro', zero_division=0)
         
         print(f"{name} test results:")
         print(f"  accuracy: {accuracy:.3f}")
@@ -571,8 +534,7 @@ def test_models_2025_data(trained_models, scaler, feature_columns, optimal_thres
             'recall': recall,
             'f1': f1,
             'confusion_matrix': cm,
-            'predictions': y_pred,
-            'probabilities': y_pred_proba
+            'predictions': y_pred
         }
     
     return results, test_data
@@ -611,7 +573,7 @@ def analyze_prediction_patterns(test_data, results):
     print("\n=== analyze prediction patterns and anomalies ===")
     
     # analyze actual anomalies
-    anomalies = test_data[test_data['target'] == 1]
+    anomalies = test_data[test_data['target'] != 0]
     
     print(f"actual anomalies: {len(anomalies)}")
     if len(anomalies) > 0:
@@ -631,13 +593,20 @@ def analyze_prediction_patterns(test_data, results):
     print(f"  mean: {test_data['relative_diff'].mean():.4f}")
     print(f"  std: {test_data['relative_diff'].std():.4f}")
     print(f"  max: {test_data['relative_diff'].max():.4f}")
+    print(f"  min: {test_data['relative_diff'].min():.4f}")
     if len(anomalies) > 0:
         print(f"  average relative difference of anomalies: {anomalies['relative_diff'].mean():.4f}")
     
     # find the largest anomalies
-    top_anomalies = test_data.nlargest(10, 'relative_diff')
-    print(f"\ntop 10 largest anomalies:")
-    for idx, row in top_anomalies.iterrows():
+    print(f"\ntop 10 largest anomalies (high):")
+    top_high = test_data.nlargest(10, 'relative_diff')
+    for idx, row in top_high.iterrows():
+        date_str = row['datetime_beginning_utc'].strftime('%Y-%m-%d %H:%M')
+        print(f"  {date_str}: relative difference={row['relative_diff']:.4f}, DA=${row['total_lmp_da']:.2f}, RT=${row['total_lmp_rt']:.2f}")
+    
+    print(f"\ntop 10 smallest anomalies (low):")
+    top_low = test_data.nsmallest(10, 'relative_diff')
+    for idx, row in top_low.iterrows():
         date_str = row['datetime_beginning_utc'].strftime('%Y-%m-%d %H:%M')
         print(f"  {date_str}: relative difference={row['relative_diff']:.4f}, DA=${row['total_lmp_da']:.2f}, RT=${row['total_lmp_rt']:.2f}")
 
@@ -677,7 +646,7 @@ def main():
         print("🚀 start electricity market anomaly detection model training and testing")
         
         # 1. train model
-        trained_models, scaler, feature_columns, train_data, optimal_thresholds = train_models_2024_data()
+        trained_models, scaler, feature_columns, train_data = train_models_2024_data()
         
         # Plot feature importance for all models
         for name, model in trained_models.items():
@@ -686,7 +655,128 @@ def main():
                 plot_feature_importance(model, feature_columns, top_n=30, model_name=name)
         
         # 2. test model  
-        test_results, test_data = test_models_2025_data(trained_models, scaler, feature_columns, optimal_thresholds)
+        test_results, test_data = test_models_2025_data(trained_models, scaler, feature_columns)
+        
+        # Add SHAP analysis for XGBoost
+        print("\n=== SHAP Analysis for XGBoost ===")
+        xgb_model = trained_models['XGBoost']
+        _, X_test, y_test = prepare_features_for_prediction(test_data)
+        X_test_scaled = scaler.transform(X_test)
+        
+        explainer = shap.TreeExplainer(xgb_model)
+        
+        # Calculate regular SHAP values and generate summary plot
+        shap_values = explainer.shap_values(X_test_scaled)
+        
+        print(f"SHAP values shape: {[sv.shape if isinstance(sv, np.ndarray) else type(sv) for sv in shap_values]}")
+        print(f"X_test_scaled shape: {X_test_scaled.shape}")
+        
+        # Generate summary plot for each class
+        class_names = ['Normal', 'High Anomaly', 'Low Anomaly']
+        for i, class_name in enumerate(class_names):
+            plt.figure(figsize=(10, 20))
+            # For multi-class, we need to select the appropriate class's SHAP values
+            if isinstance(shap_values, list):
+                class_shap_values = shap_values[i]
+            else:
+                class_shap_values = shap_values
+            
+            # Ensure the shapes match
+            if class_shap_values.shape[1] != len(feature_columns):
+                print(f"Warning: SHAP values shape {class_shap_values.shape} doesn't match feature columns length {len(feature_columns)}")
+                continue
+                
+            shap.summary_plot(class_shap_values, X_test_scaled, feature_names=feature_columns, 
+                            plot_type="bar", show=False, title=f'SHAP Values for {class_name}')
+            plt.tight_layout()
+            plt.savefig(f'shap_summary_bar_plot_class_{i}.png', bbox_inches='tight', dpi=300)
+            plt.close()
+            
+            plt.figure(figsize=(10, 20))
+            shap.summary_plot(class_shap_values, X_test_scaled, feature_names=feature_columns, 
+                            show=False, title=f'SHAP Values Distribution for {class_name}')
+            plt.tight_layout()
+            plt.savefig(f'shap_summary_beeswarm_plot_class_{i}.png', bbox_inches='tight', dpi=300)
+            plt.close()
+        
+        # Calculate and plot SHAP interaction values for a subset of data
+        print("Calculating SHAP interaction values (this may take a while)...")
+        sample_size = min(500, len(X_test_scaled))  # Use at most 500 samples
+        sample_indices = np.random.choice(len(X_test_scaled), sample_size, replace=False)
+        X_sample = X_test_scaled[sample_indices]
+        
+        interaction_values = explainer.shap_interaction_values(X_sample)
+        print(f"Interaction values shape: {[iv.shape if isinstance(iv, np.ndarray) else type(iv) for iv in interaction_values]}")
+        
+        # Plot interaction matrix for each class
+        for i, class_name in enumerate(class_names):
+            # Get interaction values for this class
+            if isinstance(interaction_values, list):
+                class_interactions = interaction_values[i]
+            else:
+                class_interactions = interaction_values
+                
+            # Reshape interaction values if needed
+            if len(class_interactions.shape) == 4:  # (samples, features, features, classes)
+                class_interactions = class_interactions[:, :, :, i]  # Select the current class
+            elif len(class_interactions.shape) == 3:  # (samples, features, features)
+                pass  # Already in the right shape
+            else:
+                print(f"Warning: Unexpected interaction values shape {class_interactions.shape}")
+                continue
+            
+            # Sum up the interaction values across all samples
+            mean_interactions = np.abs(class_interactions).mean(0)
+            
+            # Get the features with highest total interactions
+            feature_importance = np.sum(np.abs(mean_interactions), axis=0)
+            
+            # Select top features that contribute to at least 1% of total importance
+            total_importance = feature_importance.sum()
+            importance_threshold = total_importance * 0.01  # 1% threshold
+            important_features_idx = np.where(feature_importance > importance_threshold)[0]
+            
+            # Sort by importance
+            important_features_idx = important_features_idx[np.argsort(feature_importance[important_features_idx])][::-1]
+            
+            # Take top 20 features maximum
+            important_features_idx = important_features_idx[:20]
+            
+            # Print feature importance
+            print(f"\nTop important features and their interaction importance for {class_name}:")
+            for idx in important_features_idx:
+                print(f"- {feature_columns[idx]}: {feature_importance[idx]:.4f}")
+            
+            # Plot interaction matrix for important features
+            plt.figure(figsize=(15, 12))
+            important_interactions = mean_interactions[important_features_idx][:, important_features_idx]
+            
+            # Create readable labels
+            labels = [feature_columns[i] for i in important_features_idx]
+            labels = [label.replace('total_lmp_da_lag_', 'lag_').replace('da_roll_', 'roll_').replace('agg_', '') 
+                     for label in labels]
+            
+            # Plot heatmap
+            sns.heatmap(important_interactions, 
+                       xticklabels=labels,
+                       yticklabels=labels,
+                       cmap='RdBu', center=0)
+            plt.title(f'SHAP Interaction Values for {class_name}')
+            
+            # Rotate x-axis labels for better readability
+            plt.xticks(rotation=45, ha='right')
+            plt.yticks(rotation=0)
+            
+            plt.tight_layout()
+            plt.savefig(f'shap_interaction_plot_class_{i}.png', bbox_inches='tight', dpi=300)
+            plt.close()
+        
+        print("\nSHAP plots saved as:")
+        for i, class_name in enumerate(class_names):
+            print(f"Class {i} ({class_name}):")
+            print(f"- shap_summary_bar_plot_class_{i}.png")
+            print(f"- shap_summary_beeswarm_plot_class_{i}.png")
+            print(f"- shap_interaction_plot_class_{i}.png")
         
         # 3. analyze results
         analyze_prediction_patterns(test_data, test_results)
