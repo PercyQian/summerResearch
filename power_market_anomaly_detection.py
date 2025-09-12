@@ -228,7 +228,7 @@ def load_and_process_lmp_data(da_file, rt_file, weather_dir=None):
     
     return combined_data
 
-def create_anomaly_target(data, method='statistical', k=2.5, percentile=95):
+def create_anomaly_target(data, method='statistical', k=2.0, percentile=95):
     """
     create anomaly detection target variable
     
@@ -274,7 +274,7 @@ def create_anomaly_target(data, method='statistical', k=2.5, percentile=95):
         merged_data['threshold'] = k * merged_data['sigma']
         merged_data['sum']=merged_data['mu'] + merged_data['threshold']
         merged_data['difference']=merged_data['mu']- merged_data['threshold']
-        merged_data[['mu', 'threshold','relative_diff','sum','difference']].to_csv('mu_threshold.csv', index=False)  # save to csv
+        merged_data[['mu', 'threshold','relative_diff','sum','difference']].to_csv(f'mu_threshold_k{k}.csv', index=False)  # save to csv with k value
         merged_data['target'] = 0
         merged_data.loc[merged_data['deviation'] > merged_data['threshold'], 'target'] = 1  # high anomaly
         merged_data.loc[merged_data['deviation'] < -merged_data['threshold'], 'target'] = 2  # low anomaly
@@ -395,7 +395,7 @@ def train_models_2024_data():
     print(f"\nTotal training data rows after combining all years: {len(train_data)}")
     
     # create anomaly target variable
-    train_data = create_anomaly_target(train_data, method='statistical', k=2.5)
+    train_data = create_anomaly_target(train_data, method='statistical', k=2.0)
     
     # prepare features
     feature_columns, X_train, y_train = prepare_features_for_prediction(train_data)
@@ -486,7 +486,7 @@ def test_models_2025_data(trained_models, scaler, feature_columns):
     )
     
     # create anomaly target variable (using same method)
-    test_data = create_anomaly_target(test_data, method='statistical', k=2.5)
+    test_data = create_anomaly_target(test_data, method='statistical', k=2.0)
     
     # prepare features (ensure feature order is consistent)
     X_test = pd.DataFrame()
@@ -609,7 +609,7 @@ def analyze_prediction_patterns(test_data, results):
     for idx, row in top_low.iterrows():
         date_str = row['datetime_beginning_utc'].strftime('%Y-%m-%d %H:%M')
         print(f"  {date_str}: relative difference={row['relative_diff']:.4f}, DA=${row['total_lmp_da']:.2f}, RT=${row['total_lmp_rt']:.2f}")
-
+        
 def plot_feature_importance(model, feature_names, top_n=30, model_name=""):
     """
     Plots the feature importance of a trained model.
@@ -640,152 +640,185 @@ def plot_feature_importance(model, feature_names, top_n=30, model_name=""):
         print(f"- {feature_names[i]}: {importances[i]:.4f}")
 
 
+def test_different_k_values():
+    """test different k values"""
+    print("=== test different k values ===")
+    
+    # k values to test
+    k_values = [1.5, 2.0, 2.5, 3.0, 3.5]
+    
+    # 1. train model (using default k=2.0)
+    print("\n=== 训练模型 ===")
+    trained_models, scaler, feature_columns, train_data = train_models_2024_data()
+    
+    # 2. load test data
+    print("\n=== load 2025 test data ===")
+    test_data = load_and_process_lmp_data(
+        da_file="applicationData/da_hrl_lmps_2025.csv",
+        rt_file="applicationData/rt_hrl_lmps_2025.csv",
+        weather_dir="weatherData/meteo/"
+    )
+    
+    # 3. test different k values
+    k_results = {}
+    
+    for k in k_values:
+        print(f"\n{'='*20} 测试 k={k} {'='*20}")
+        
+        # create anomaly target variable using current k value
+        test_data_k = create_anomaly_target(test_data.copy(), method='statistical', k=k)
+        
+        # prepare features (ensure feature order is consistent)
+        X_test = pd.DataFrame()
+        for col in feature_columns:
+            if col in test_data_k.columns:
+                X_test[col] = test_data_k[col]
+            else:
+                X_test[col] = 0  # fill missing features with 0
+        
+        y_test = test_data_k['target']
+        
+        # standardize features
+        X_test_scaled = scaler.transform(X_test)
+        
+        print(f"test set feature shape: {X_test_scaled.shape}")
+        print(f"test set target distribution: {y_test.value_counts().to_dict()}")
+        
+        # test each model
+        k_model_results = {}
+        
+        for name, model in trained_models.items():
+            print(f"\ntest {name}...")
+            
+            y_pred = model.predict(X_test_scaled)
+
+            # calculate evaluation metrics
+            accuracy = accuracy_score(y_test, y_pred)
+            precision = precision_score(y_test, y_pred, average='macro', zero_division=0)
+            recall = recall_score(y_test, y_pred, average='macro', zero_division=0)
+            f1 = f1_score(y_test, y_pred, average='macro', zero_division=0)
+            
+            print(f"{name} test results:")
+            print(f"  accuracy: {accuracy:.3f}")
+            print(f"  precision: {precision:.3f}")
+            print(f"  recall: {recall:.3f}")
+            print(f"  F1 score: {f1:.3f}")
+            
+            # confusion matrix
+            cm = confusion_matrix(y_test, y_pred)
+            print(f"  confusion matrix:\n{cm}")
+            
+            k_model_results[name] = {
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'confusion_matrix': cm,
+                'predictions': y_pred,
+                'anomaly_count': (y_test != 0).sum(),
+                'anomaly_rate': (y_test != 0).sum() / len(y_test) * 100
+            }
+        
+        k_results[k] = k_model_results
+    
+    # 4. compare different k values
+    print(f"\n{'='*50}")
+    print("📊 different k values results")
+    print(f"{'='*50}")
+    
+    # create comparison table
+    print(f"\n{'k value':<8} {'anomaly rate(%)':<12} {'XGBoost F1':<12} {'RandomForest F1':<15} {'LogisticRegression F1':<20}")
+    print("-" * 70)
+    
+    for k in k_values:
+        anomaly_rate = k_results[k]['XGBoost']['anomaly_rate']
+        xgb_f1 = k_results[k]['XGBoost']['f1']
+        rf_f1 = k_results[k]['RandomForest']['f1']
+        lr_f1 = k_results[k]['LogisticRegression']['f1']
+        
+        print(f"{k:<8.1f} {anomaly_rate:<12.2f} {xgb_f1:<12.3f} {rf_f1:<15.3f} {lr_f1:<20.3f}")
+    
+    # visualize different k values
+    plt.figure(figsize=(15, 10))
+    
+    # subplot 1: F1 score comparison
+    plt.subplot(2, 2, 1)
+    for model_name in ['XGBoost', 'RandomForest', 'LogisticRegression']:
+        f1_scores = [k_results[k][model_name]['f1'] for k in k_values]
+        plt.plot(k_values, f1_scores, marker='o', label=model_name)
+    plt.xlabel('k value')
+    plt.ylabel('F1 score')
+    plt.title('F1 score vs. k value')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # subplot 2: anomaly rate change
+    plt.subplot(2, 2, 2)
+    anomaly_rates = [k_results[k]['XGBoost']['anomaly_rate'] for k in k_values]
+    plt.plot(k_values, anomaly_rates, marker='s', color='red', linewidth=2)
+    plt.xlabel('k value')
+    plt.ylabel('anomaly rate (%)')
+    plt.title('anomaly rate vs. k value')
+    plt.grid(True, alpha=0.3)
+    
+    # subplot 3: accuracy comparison
+    plt.subplot(2, 2, 3)
+    for model_name in ['XGBoost', 'RandomForest', 'LogisticRegression']:
+        accuracies = [k_results[k][model_name]['accuracy'] for k in k_values]
+        plt.plot(k_values, accuracies, marker='^', label=model_name)
+    plt.xlabel('k value')
+    plt.ylabel('accuracy')
+    plt.title('accuracy vs. k value')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # subplot 4: precision comparison
+    plt.subplot(2, 2, 4)
+    for model_name in ['XGBoost', 'RandomForest', 'LogisticRegression']:
+        precisions = [k_results[k][model_name]['precision'] for k in k_values]
+        plt.plot(k_values, precisions, marker='d', label=model_name)
+    plt.xlabel('k value')
+    plt.ylabel('precision')
+    plt.title('precision vs. k value')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig('k_values_comparison.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    # find the best k value
+    print(f"\n🏆 best k value recommended:")
+    best_k_by_model = {}
+    
+    for model_name in ['XGBoost', 'RandomForest', 'LogisticRegression']:
+        f1_scores = {k: k_results[k][model_name]['f1'] for k in k_values}
+        best_k = max(f1_scores.keys(), key=lambda k: f1_scores[k])
+        best_f1 = f1_scores[best_k]
+        best_k_by_model[model_name] = (best_k, best_f1)
+        print(f"  {model_name}: k={best_k} (F1={best_f1:.3f})")
+    
+    # overall best k value (based on average F1 score)
+    avg_f1_by_k = {}
+    for k in k_values:
+        avg_f1 = np.mean([k_results[k][model]['f1'] for model in ['XGBoost', 'RandomForest', 'LogisticRegression']])
+        avg_f1_by_k[k] = avg_f1
+    
+    overall_best_k = max(avg_f1_by_k.keys(), key=lambda k: avg_f1_by_k[k])
+    print(f"  overall best: k={overall_best_k} (average F1={avg_f1_by_k[overall_best_k]:.3f})")
+    
+    return k_results, overall_best_k
+
 def main():
     """main function"""
     try:
-        print("🚀 start electricity market anomaly detection model training and testing")
+        print("🚀 start power market anomaly detection model training and testing")
         
-        # 1. train model
-        trained_models, scaler, feature_columns, train_data = train_models_2024_data()
+        # test different k values
+        k_results, best_k = test_different_k_values()
         
-        # Plot feature importance for all models
-        for name, model in trained_models.items():
-            if feature_columns:
-                print(f"\n--- Plotting {name} Feature Importance ---")
-                plot_feature_importance(model, feature_columns, top_n=30, model_name=name)
-        
-        # 2. test model  
-        test_results, test_data = test_models_2025_data(trained_models, scaler, feature_columns)
-        
-        # Add SHAP analysis for XGBoost
-        print("\n=== SHAP Analysis for XGBoost ===")
-        xgb_model = trained_models['XGBoost']
-        _, X_test, y_test = prepare_features_for_prediction(test_data)
-        X_test_scaled = scaler.transform(X_test)
-        
-        explainer = shap.TreeExplainer(xgb_model)
-        
-        # Calculate regular SHAP values and generate summary plot
-        shap_values = explainer.shap_values(X_test_scaled)
-        
-        print(f"SHAP values shape: {[sv.shape if isinstance(sv, np.ndarray) else type(sv) for sv in shap_values]}")
-        print(f"X_test_scaled shape: {X_test_scaled.shape}")
-        
-        # Generate summary plot for each class
-        class_names = ['Normal', 'High Anomaly', 'Low Anomaly']
-        for i, class_name in enumerate(class_names):
-            plt.figure(figsize=(10, 20))
-            # For multi-class, we need to select the appropriate class's SHAP values
-            if isinstance(shap_values, list):
-                class_shap_values = shap_values[i]
-            else:
-                class_shap_values = shap_values
-            
-            # Ensure the shapes match
-            if class_shap_values.shape[1] != len(feature_columns):
-                print(f"Warning: SHAP values shape {class_shap_values.shape} doesn't match feature columns length {len(feature_columns)}")
-                continue
-                
-            shap.summary_plot(class_shap_values, X_test_scaled, feature_names=feature_columns, 
-                            plot_type="bar", show=False, title=f'SHAP Values for {class_name}')
-            plt.tight_layout()
-            plt.savefig(f'shap_summary_bar_plot_class_{i}.png', bbox_inches='tight', dpi=300)
-            plt.close()
-            
-            plt.figure(figsize=(10, 20))
-            shap.summary_plot(class_shap_values, X_test_scaled, feature_names=feature_columns, 
-                            show=False, title=f'SHAP Values Distribution for {class_name}')
-            plt.tight_layout()
-            plt.savefig(f'shap_summary_beeswarm_plot_class_{i}.png', bbox_inches='tight', dpi=300)
-            plt.close()
-        
-        # Calculate and plot SHAP interaction values for a subset of data
-        print("Calculating SHAP interaction values (this may take a while)...")
-        sample_size = min(500, len(X_test_scaled))  # Use at most 500 samples
-        sample_indices = np.random.choice(len(X_test_scaled), sample_size, replace=False)
-        X_sample = X_test_scaled[sample_indices]
-        
-        interaction_values = explainer.shap_interaction_values(X_sample)
-        print(f"Interaction values shape: {[iv.shape if isinstance(iv, np.ndarray) else type(iv) for iv in interaction_values]}")
-        
-        # Plot interaction matrix for each class
-        for i, class_name in enumerate(class_names):
-            # Get interaction values for this class
-            if isinstance(interaction_values, list):
-                class_interactions = interaction_values[i]
-            else:
-                class_interactions = interaction_values
-                
-            # Reshape interaction values if needed
-            if len(class_interactions.shape) == 4:  # (samples, features, features, classes)
-                class_interactions = class_interactions[:, :, :, i]  # Select the current class
-            elif len(class_interactions.shape) == 3:  # (samples, features, features)
-                pass  # Already in the right shape
-            else:
-                print(f"Warning: Unexpected interaction values shape {class_interactions.shape}")
-                continue
-            
-            # Sum up the interaction values across all samples
-            mean_interactions = np.abs(class_interactions).mean(0)
-            
-            # Get the features with highest total interactions
-            feature_importance = np.sum(np.abs(mean_interactions), axis=0)
-            
-            # Select top features that contribute to at least 1% of total importance
-            total_importance = feature_importance.sum()
-            importance_threshold = total_importance * 0.01  # 1% threshold
-            important_features_idx = np.where(feature_importance > importance_threshold)[0]
-            
-            # Sort by importance
-            important_features_idx = important_features_idx[np.argsort(feature_importance[important_features_idx])][::-1]
-            
-            # Take top 20 features maximum
-            important_features_idx = important_features_idx[:20]
-            
-            # Print feature importance
-            print(f"\nTop important features and their interaction importance for {class_name}:")
-            for idx in important_features_idx:
-                print(f"- {feature_columns[idx]}: {feature_importance[idx]:.4f}")
-            
-            # Plot interaction matrix for important features
-            plt.figure(figsize=(15, 12))
-            important_interactions = mean_interactions[important_features_idx][:, important_features_idx]
-            
-            # Create readable labels
-            labels = [feature_columns[i] for i in important_features_idx]
-            labels = [label.replace('total_lmp_da_lag_', 'lag_').replace('da_roll_', 'roll_').replace('agg_', '') 
-                     for label in labels]
-            
-            # Plot heatmap
-            sns.heatmap(important_interactions, 
-                       xticklabels=labels,
-                       yticklabels=labels,
-                       cmap='RdBu', center=0)
-            plt.title(f'SHAP Interaction Values for {class_name}')
-            
-            # Rotate x-axis labels for better readability
-            plt.xticks(rotation=45, ha='right')
-            plt.yticks(rotation=0)
-            
-            plt.tight_layout()
-            plt.savefig(f'shap_interaction_plot_class_{i}.png', bbox_inches='tight', dpi=300)
-            plt.close()
-        
-        print("\nSHAP plots saved as:")
-        for i, class_name in enumerate(class_names):
-            print(f"Class {i} ({class_name}):")
-            print(f"- shap_summary_bar_plot_class_{i}.png")
-            print(f"- shap_summary_beeswarm_plot_class_{i}.png")
-            print(f"- shap_interaction_plot_class_{i}.png")
-        
-        # 3. analyze results
-        analyze_prediction_patterns(test_data, test_results)
-        
-        # 4. save best model
-        best_model_name = max(test_results.keys(), key=lambda x: test_results[x]['f1'])
-        print(f"\n🏆 best model: {best_model_name} (F1={test_results[best_model_name]['f1']:.3f})")
-        
-        print("\n✅ model training and testing completed!")
+        print(f"\n✅ different k values test completed! recommend using k={best_k}")
+        print(f"📊 results visualization saved as k_values_comparison.png")
         
     except Exception as e:
         print(f"❌ training and testing process failed: {e}")
