@@ -23,6 +23,8 @@ import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
 import shap
+import pickle
+import joblib
 
 # holiday definition
 holidays = [
@@ -809,12 +811,89 @@ def test_different_k_values():
     
     return k_results, overall_best_k
 
+def save_model_for_prediction(trained_models, scaler, feature_columns, k_value=2.0):
+    """Save model and components for prediction"""
+    print("💾 save model and components...")
+    
+    # create model directory
+    model_dir = "saved_models"
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
+    
+    # save XGBoost model (main used model)
+    xgb_model = trained_models['XGBoost']
+    joblib.dump(xgb_model, os.path.join(model_dir, 'xgboost_model.pkl'))
+    
+    # save feature scaler
+    joblib.dump(scaler, os.path.join(model_dir, 'scaler.pkl'))
+    
+    # save feature list
+    with open(os.path.join(model_dir, 'feature_columns.pkl'), 'wb') as f:
+        pickle.dump(feature_columns, f)
+    
+    # save k value
+    with open(os.path.join(model_dir, 'k_value.pkl'), 'wb') as f:
+        pickle.dump(k_value, f)
+    
+    # save model configuration information
+    model_info = {
+        'model_type': 'XGBoost',
+        'k_value': k_value,
+        'feature_count': len(feature_columns),
+        'save_date': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    with open(os.path.join(model_dir, 'model_info.pkl'), 'wb') as f:
+        pickle.dump(model_info, f)
+    
+    print(f"✅ model saved to {model_dir} directory")
+    print(f"   - XGBoost model: xgboost_model.pkl")
+    print(f"   - feature scaler: scaler.pkl") 
+    print(f"   - feature list: feature_columns.pkl")
+    print(f"   - k value: k_value.pkl")
+    print(f"   - model information: model_info.pkl")
+
+def load_model_for_prediction():
+    """Load saved model and components for prediction"""
+    model_dir = "saved_models"
+    
+    if not os.path.exists(model_dir):
+        raise FileNotFoundError(f"model directory {model_dir} does not exist, please train and save model first")
+    
+    # load model and components
+    xgb_model = joblib.load(os.path.join(model_dir, 'xgboost_model.pkl'))
+    scaler = joblib.load(os.path.join(model_dir, 'scaler.pkl'))
+    
+    with open(os.path.join(model_dir, 'feature_columns.pkl'), 'rb') as f:
+        feature_columns = pickle.load(f)
+    
+    with open(os.path.join(model_dir, 'k_value.pkl'), 'rb') as f:
+        k_value = pickle.load(f)
+    
+    with open(os.path.join(model_dir, 'model_info.pkl'), 'rb') as f:
+        model_info = pickle.load(f)
+    
+    print(f"✅ model loaded:")
+    print(f"   - model type: {model_info['model_type']}")
+    print(f"   - k value: {model_info['k_value']}")
+    print(f"   - feature count: {model_info['feature_count']}")
+    print(f"   - save date: {model_info['save_date']}")
+    
+    return xgb_model, scaler, feature_columns, k_value
+
 def main():
     """main function"""
     try:
         print("🚀 start power market anomaly detection model training and testing")
         
-        # test different k values
+        # train model
+        print("\n=== train model ===")
+        trained_models, scaler, feature_columns, train_data = train_models_2024_data()
+        
+        # save best model
+        save_model_for_prediction(trained_models, scaler, feature_columns, k_value=3.5)
+        
+        # test different k values  
         k_results, best_k = test_different_k_values()
         
         print(f"\n✅ different k values test completed! recommend using k={best_k}")

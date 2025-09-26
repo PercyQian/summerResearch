@@ -1,0 +1,177 @@
+[
+  {
+    "prediction_time": "2025-09-11T23:55:37.233274",
+    "target_datetime": "2025-09-12 23:55:37",
+    "ensemble_prediction": 0,
+    "individual_predictions": {
+      "RandomForest": 0,
+      "XGBoost": 0,
+      "LogisticRegression": 0
+    },
+    "probabilities": {
+      "RandomForest": {
+        "normal": 0.985,
+        "high_anomaly": 0.0,
+        "low_anomaly": 0.015
+      },
+      "XGBoost": {
+        "normal": 0.9888378381729126,
+        "high_anomaly": 0.0024417282547801733,
+        "low_anomaly": 0.008720435202121735
+      },
+      "LogisticRegression": {
+        "normal": 0.7267131571459828,
+        "high_anomaly": 0.09740520935532786,
+        "low_anomaly": 0.1758816334986895
+      }
+    },
+    "confidence": 1.0,
+    "explanation": "正常情况 - 实时价格与日前价格差异在正常范围内",
+    "input_summary": {
+      "da_price": 48.5,
+      "hour": 23,
+      "day_of_week": 4,
+      "is_holiday": 0
+    }
+  },
+  {
+    "prediction_time": "2025-09-11T23:55:37.258414",
+    "target_datetime": "2025-09-12 00:55:37",
+    "ensemble_prediction": 0,
+    "individual_predictions": {
+      "RandomForest": 0,
+      "XGBoost": 0,
+      "LogisticRegression": 0
+    },
+    "probabilities": {
+      "RandomForest": {
+        "normal": 0.9694412462152155,
+        "high_anomaly": 0.014594872451500974,
+        "low_anomaly": 0.01596388133328342
+      },
+      "XGBoost": {
+        "normal": 0.9920159578323364,
+        "high_anomaly": 0.003347899066284299,
+        "low_anomaly": 0.004636155441403389
+      },
+      "LogisticRegression": {
+        "normal": 0.6859950928312741,
+        "high_anomaly": 0.18134786673600484,
+        "low_anomaly": 0.13265704043272117
+      }
+    },
+    "confidence": 1.0,
+    "explanation": "正常情况 - 实时价格与日前价格差异在正常范围内",
+    "input_summary": {
+      "da_price": 45.5,
+      "hour": 0,
+      "day_of_week": 4,
+      "is_holiday": 0
+    }
+  },
+  {
+    "prediction_time": "2025-09-11T23:55:37.266807",
+    "target_datetime": "2025-09-12 05:55:37",
+    "ensemble_prediction": 0,
+    "individual_predictions": {
+      "RandomForest": 0,
+      "XGBoost": 0,
+      "LogisticRegression": 0
+    },
+    "probabilities": {
+      "RandomForest": {
+        "normal": 0.9734207134559856,
+        "high_anomaly": 0.014594872451500974,
+        "low_anomaly": 0.011984414092513525
+      },
+      "XGBoost": {
+        "normal": 0.9883997440338135,
+        "high_anomaly": 0.004006901290267706,
+        "low_anomaly": 0.007593280170112848
+      },
+      "LogisticRegression": {
+        "normal": 0.5372605940297085,
+        "high_anomaly": 0.27019535400655253,
+        "low_anomaly": 0.19254405196373903
+      }
+    },
+    "confidence": 1.0,
+    "explanation": "正常情况 - 实时价格与日前价格差异在正常范围内",
+    "input_summary": {
+      "da_price": 48.0,
+      "hour": 5,
+      "day_of_week": 4,
+      "is_holiday": 0
+    }
+  },
+  {
+    "prediction_time": "2025-09-11T23:55:37.275298",
+    "target_datetime": "2025-09-12 11:55:37",
+    "ensemble_prediction": 0,
+    "individual_predictions": {
+      "RandomForest": 0,
+      "XGBoost": 0,
+      "LogisticRegression": 0
+    },
+    "probabilities": {
+      "RandomForest": {
+        "normal": 0.9462887959988671,
+        "high_anomaly": 0.01913636544126982,
+        "low_anomaly": 0.034574838559863014
+      },
+      "XGBoost": {
+        "normal": 0.9877195358276367,
+        "high_anomaly": 0.0040041436441242695,
+        "low_anomaly": 0.008276338689029217
+      },
+      "LogisticRegression": {
+        "normal": 0.6940100062807838,
+        "high_anomaly": 0.038056372758435764,
+        "low_anomaly": 0.2679336209607804
+      }
+    },
+    "confidence": 1.0,
+    "explanation": "正常情况 - 实时价格与日前价格差异在正常范围内",
+    "input_summary": {
+      "da_price": 51.0,
+      "hour": 11,
+      "day_of_week": 4,
+      "is_holiday": 0
+    }
+  },
+  {
+    "prediction_time": "2025-09-11T23:55:37.283300",
+    "target_datetime": "2025-09-12 23:55:37",
+    "ensemble_prediction": 0,
+    "individual_predictions": {
+      "RandomForest": 0,
+      "XGBoost": 0,
+      "LogisticRegression": 0
+    },
+    "probabilities": {
+      "RandomForest": {
+        "normal": 0.9744440879245785,
+        "high_anomaly": 0.01,
+        "low_anomaly": 0.015555912075421357
+      },
+      "XGBoost": {
+        "normal": 0.9875473976135254,
+        "high_anomaly": 0.002633732045069337,
+        "low_anomaly": 0.009818846359848976
+      },
+      "LogisticRegression": {
+        "normal": 0.8151218341381363,
+        "high_anomaly": 0.04757186793601495,
+        "low_anomaly": 0.13730629792584867
+      }
+    },
+    "confidence": 1.0,
+    "explanation": "正常情况 - 实时价格与日前价格差异在正常范围内",
+    "input_summary": {
+      "da_price": 57.0,
+      "hour": 23,
+      "day_of_week": 4,
+      "is_holiday": 0
+    }
+  }
+]
