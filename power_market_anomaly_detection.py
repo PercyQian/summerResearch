@@ -90,7 +90,11 @@ def load_and_process_lmp_data(da_file, rt_file, weather_dir=None):
     print(f"RT data: {len(rt_data)} rows")
     
     # ensure data length is consistent
-    min_len = min(len(da_data), len(rt_data))
+    orig_len_da = len(da_data)
+    orig_len_rt = len(rt_data)
+    min_len = min(orig_len_da, orig_len_rt)
+    da_truncated = orig_len_da - min_len
+    rt_truncated = orig_len_rt - min_len
     da_data = da_data[:min_len].reset_index(drop=True)
     rt_data = rt_data[:min_len].reset_index(drop=True)
     
@@ -132,7 +136,78 @@ def load_and_process_lmp_data(da_file, rt_file, weather_dir=None):
         combined_data[f'da_roll_mean_{w}h'] = shifted_data.rolling(window=w).mean()
         combined_data[f'da_roll_std_{w}h'] = shifted_data.rolling(window=w).std()
     # --- end new feature engineering ---
+
+    # === diagnostics: which rows will be dropped due to missing lag features ===
+    try:
+        # build row index to distinguish warm-up rows
+        combined_data['__row_idx__'] = np.arange(len(combined_data))
+
+        lag_cols = [f'total_lmp_da_lag_{lag}' for lag in range(1, 8)]
+        lag_na = {k: combined_data[f'total_lmp_da_lag_{k}'].isna() for k in range(1, 8)}
+        warmup = {k: (combined_data['__row_idx__'] < (24 * k)) for k in range(1, 8)}
+        missing_source = {k: (lag_na[k] & ~warmup[k]) for k in range(1, 8)}
+
+        # any lag missing for this row
+        any_lag_missing = None
+        for k in range(1, 8):
+            any_lag_missing = lag_na[k] if any_lag_missing is None else (any_lag_missing | lag_na[k])
+
+        drop_candidates = combined_data[any_lag_missing].copy()
+
+        # annotate reasons
+        if not drop_candidates.empty:
+            for k in range(1, 8):
+                drop_candidates[f'warmup_lag_{k}'] = warmup[k][any_lag_missing].values
+                drop_candidates[f'missing_source_lag_{k}'] = missing_source[k][any_lag_missing].values
+
+            drop_candidates['any_warmup'] = False
+            drop_candidates['any_missing_source'] = False
+            for k in range(1, 8):
+                drop_candidates['any_warmup'] = drop_candidates['any_warmup'] | drop_candidates[f'warmup_lag_{k}']
+                drop_candidates['any_missing_source'] = drop_candidates['any_missing_source'] | drop_candidates[f'missing_source_lag_{k}']
+
+            # minimal view for report
+            report_cols = ['datetime_beginning_utc', 'hour', 'day_of_week', 'any_warmup', 'any_missing_source']
+            drop_report = drop_candidates[report_cols].copy()
+
+            warmup_rows = int(drop_candidates['any_warmup'].sum())
+            missing_src_rows = int(drop_candidates['any_missing_source'].sum())
+            total_drop_rows = len(drop_candidates)
+
+            print("=== diagnostics: lag-based row drops ===")
+            print(f"Total rows (post DA/RT align): {len(combined_data)}")
+            if (da_truncated > 0) or (rt_truncated > 0):
+                print(f"Truncated due to DA/RT length align -> DA: {da_truncated}, RT: {rt_truncated}")
+            print(f"Rows to drop due to missing lag(s): {total_drop_rows}")
+            print(f"  of which warm-up rows (first k*24 hours): {warmup_rows}")
+            print(f"  of which missing DA source at required lag: {missing_src_rows}")
+
+            # Save detailed report
+            try:
+                drop_candidates.to_csv('dropped_lag_rows_detailed.csv', index=False)
+                drop_report.to_csv('dropped_lag_rows.csv', index=False)
+                print("Saved diagnostics: dropped_lag_rows.csv (summary), dropped_lag_rows_detailed.csv (full)")
+            except Exception as _:
+                pass
+        else:
+            print("=== diagnostics: lag-based row drops ===")
+            print("No rows will be dropped by lag NaNs (rare).")
+    except Exception as diag_e:
+        print(f"⚠️ diagnostics for lag-based drops failed: {diag_e}")
     
+    # 在训练集中显式跳过最早的7天，避免用缺失源数据被填充的滞后特征
+    try:
+        if not combined_data.empty:
+            min_ts = combined_data['datetime_beginning_utc'].min()
+            cutoff_ts = min_ts + pd.Timedelta(days=7)
+            before_rows = len(combined_data)
+            combined_data = combined_data[combined_data['datetime_beginning_utc'] >= cutoff_ts]
+            after_rows = len(combined_data)
+            print(f"⏭️ skip first 7 days: removed {before_rows - after_rows} rows (cutoff >= {cutoff_ts})")
+    except Exception as _:
+        # non-fatal; proceed with downstream dropna safeguard
+        pass
+
     # add weather features (if weather data is provided)
     if weather_dir and os.path.isdir(weather_dir):
         print(f"add weather features from {weather_dir}...")
@@ -224,7 +299,13 @@ def load_and_process_lmp_data(da_file, rt_file, weather_dir=None):
     # The first 7 days will have NaNs due to the 7-day lag features.
     # We should only drop rows that have NaNs in the lag columns.
     lag_cols = [f'total_lmp_da_lag_{lag}' for lag in range(1, 8)]
+    # remove temporary diagnostic column if present
+    if '__row_idx__' in combined_data.columns:
+        # Do not let it affect drop; drop after diagnostics
+        pass
     combined_data = combined_data.dropna(subset=lag_cols).reset_index(drop=True)
+    if '__row_idx__' in combined_data.columns:
+        combined_data.drop(columns=['__row_idx__'], inplace=True)
     
     print(f"✅ data processing completed: {len(combined_data)} rows, {len(combined_data.columns)} columns")
     
@@ -906,3 +987,136 @@ def main():
 
 if __name__ == "__main__":
     main() 
+
+# =============================
+# Saved model evaluation (k=3.5)
+# =============================
+def evaluate_saved_xgb_on_2025():
+    """
+    Load the saved XGBoost model and evaluate on 2025 data using the saved k (e.g., k=3.5).
+    Outputs:
+      - eval_confusion_matrix_k{K}.png
+      - eval_anomaly_by_hour_k{K}.png
+      - eval_anomaly_by_dow_k{K}.png
+      - eval_relative_diff_hist_k{K}.png
+      - eval_top_anomalies_k{K}.csv (top 20 highs and lows)
+      - prints metrics and relative_diff stats
+    """
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
+
+    print("\n=== Evaluate saved XGBoost on 2025 ===")
+    # 1) load saved artifacts
+    xgb_model, scaler, feature_columns, k_value = load_model_for_prediction()
+    print(f"Use saved k = {k_value}")
+
+    # 2) load and process 2025 data
+    test_data = load_and_process_lmp_data(
+        da_file="applicationData/da_hrl_lmps_2025.csv",
+        rt_file="applicationData/rt_hrl_lmps_2025.csv",
+        weather_dir="weatherData/meteo/"
+    )
+
+    # 3) create labels with the saved k
+    test_data = create_anomaly_target(test_data, method='statistical', k=k_value)
+
+    # 4) build X in exact training feature order
+    X_test = pd.DataFrame()
+    for col in feature_columns:
+        if col in test_data.columns:
+            X_test[col] = test_data[col]
+        else:
+            X_test[col] = 0
+    y_test = test_data['target']
+
+    # 5) scale and predict
+    X_test_scaled = scaler.transform(X_test)
+    y_pred = xgb_model.predict(X_test_scaled)
+
+    # 6) metrics
+    acc = accuracy_score(y_test, y_pred)
+    prec = precision_score(y_test, y_pred, average='macro', zero_division=0)
+    rec = recall_score(y_test, y_pred, average='macro', zero_division=0)
+    f1 = f1_score(y_test, y_pred, average='macro', zero_division=0)
+    print("\n=== Overall metrics ===")
+    print(f"accuracy: {acc:.3f}")
+    print(f"precision (macro): {prec:.3f}")
+    print(f"recall (macro): {rec:.3f}")
+    print(f"F1 (macro): {f1:.3f}")
+    print("\n=== Classification report ===")
+    print(classification_report(y_test, y_pred, digits=3))
+
+    # 7) confusion matrix chart
+    cm = confusion_matrix(y_test, y_pred)
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False,
+                xticklabels=['Normal','High','Low'],
+                yticklabels=['Normal','High','Low'])
+    plt.title(f'Confusion Matrix (XGBoost, k={k_value})')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    out_cm = f'eval_confusion_matrix_k{k_value}.png'
+    plt.tight_layout()
+    plt.savefig(out_cm, dpi=200)
+    plt.close()
+    print(f"Saved -> {out_cm}")
+
+    # 8) anomaly distributions by hour and DOW
+    anomalies = test_data[test_data['target'] != 0].copy()
+    # by hour
+    plt.figure(figsize=(8,4))
+    anomalies['hour'].value_counts().sort_index().plot(kind='bar', color='#c44e52')
+    plt.title(f'Anomaly Count by Hour (k={k_value})')
+    plt.xlabel('Hour of Day')
+    plt.ylabel('Count')
+    out_hour = f'eval_anomaly_by_hour_k{k_value}.png'
+    plt.tight_layout()
+    plt.savefig(out_hour, dpi=200)
+    plt.close()
+    print(f"Saved -> {out_hour}")
+
+    # by day_of_week
+    plt.figure(figsize=(8,4))
+    dow_counts = anomalies['day_of_week'].value_counts().sort_index()
+    dow_labels = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
+    # align labels to index
+    labels = [dow_labels[i] for i in dow_counts.index]
+    plt.bar(labels, dow_counts.values, color='#4c72b0')
+    plt.title(f'Anomaly Count by Day of Week (k={k_value})')
+    plt.xlabel('Day of Week')
+    plt.ylabel('Count')
+    out_dow = f'eval_anomaly_by_dow_k{k_value}.png'
+    plt.tight_layout()
+    plt.savefig(out_dow, dpi=200)
+    plt.close()
+    print(f"Saved -> {out_dow}")
+
+    # 9) relative_diff stats and histogram
+    rd = test_data['relative_diff']
+    print("\n=== relative_diff statistics ===")
+    print(f"mean: {rd.mean():.4f}, std: {rd.std():.4f}, max: {rd.max():.4f}, min: {rd.min():.4f}")
+    plt.figure(figsize=(8,4))
+    plt.hist(rd, bins=60, color='#55a868', alpha=0.9)
+    plt.title(f'relative_diff Histogram (k={k_value})')
+    plt.xlabel('relative_diff')
+    plt.ylabel('Frequency')
+    out_hist = f'eval_relative_diff_hist_k{k_value}.png'
+    plt.tight_layout()
+    plt.savefig(out_hist, dpi=200)
+    plt.close()
+    print(f"Saved -> {out_hist}")
+
+    # 10) top extremes by relative_diff (high/low)
+    top_high = test_data.nlargest(20, 'relative_diff')[['datetime_beginning_utc','total_lmp_da','total_lmp_rt','relative_diff']]
+    top_low  = test_data.nsmallest(20, 'relative_diff')[['datetime_beginning_utc','total_lmp_da','total_lmp_rt','relative_diff']]
+    top_high['type'] = 'high'
+    top_low['type'] = 'low'
+    top_all = pd.concat([top_high, top_low], ignore_index=True)
+    out_csv = f'eval_top_anomalies_k{k_value}.csv'
+    top_all.to_csv(out_csv, index=False)
+    print(f"Saved -> {out_csv}")
+
+    print("\nDone. Charts and CSV are saved in the project root directory.")
