@@ -287,10 +287,8 @@ def load_and_process_lmp_data(da_file, rt_file, weather_dir=None):
         print("✅ Aggregated features created and original weather columns dropped.")
 
 
-    # Fill any missing weather data (from merge or if file failed) with defaults
+    # 不再对天气聚合特征进行均值填充，后续在特征阶段严格丢弃含 NaN 的样本
     agg_weather_cols = [col for col in combined_data.columns if col.startswith('agg_')]
-    for col in agg_weather_cols:
-        combined_data[col] = combined_data[col].fillna(combined_data[col].mean())
     
     # add holiday features
     combined_data = apply_holiday_features(combined_data, holidays)
@@ -336,33 +334,28 @@ def create_anomaly_target(data, method='statistical', k=2.0, percentile=95):
             count='count'
         ).reset_index()
         
-        # handle cases where standard deviation is NaN or 0
+        # 不再对基线统计进行任何填充；后续将丢弃缺失或零方差样本
         global_sigma = data['relative_diff'].std()
-        if pd.isna(global_sigma) or global_sigma == 0:
-            global_sigma = 1.0
-        
-        baseline_stats['sigma'] = baseline_stats['sigma'].fillna(global_sigma)
-        baseline_stats.loc[baseline_stats['sigma'] == 0, 'sigma'] = global_sigma
-        
+
         # merge baseline statistics
         merged_data = data.merge(baseline_stats, on=['hour', 'day_of_week'], how='left')
         
-        # fill missing baseline statistics
-        global_mu = merged_data['relative_diff'].mean()
-        merged_data['mu'] = merged_data['mu'].fillna(global_mu)
-        merged_data['sigma'] = merged_data['sigma'].fillna(global_sigma)
+        # 仅保留有效基线（mu/sigma 非空且 sigma>0）的样本
+        valid_mask = (~merged_data['mu'].isna()) & (~merged_data['sigma'].isna()) & (merged_data['sigma'] > 0)
+        merged_data = merged_data.loc[valid_mask].copy()
         
         # calculate anomaly
         merged_data['deviation'] = merged_data['relative_diff'] - merged_data['mu']
         merged_data['threshold'] = k * merged_data['sigma']
-        merged_data['sum']=merged_data['mu'] + merged_data['threshold']
-        merged_data['difference']=merged_data['mu']- merged_data['threshold']
-        merged_data[['mu', 'threshold','relative_diff','sum','difference']].to_csv(f'mu_threshold_k{k}.csv', index=False)  # save to csv with k value
+        merged_data['sum'] = merged_data['mu'] + merged_data['threshold']
+        merged_data['difference'] = merged_data['mu'] - merged_data['threshold']
+        merged_data[['mu', 'threshold','relative_diff','sum','difference']].to_csv(f'mu_threshold_k{k}.csv', index=False)
         merged_data['target'] = 0
-        merged_data.loc[merged_data['deviation'] > merged_data['threshold'], 'target'] = 1  # high anomaly
-        merged_data.loc[merged_data['deviation'] < -merged_data['threshold'], 'target'] = 2  # low anomaly
+        merged_data.loc[merged_data['deviation'] > merged_data['threshold'], 'target'] = 1
+        merged_data.loc[merged_data['deviation'] < -merged_data['threshold'], 'target'] = 2
         
-        data['target'] = merged_data['target']
+        # 返回裁剪后的数据（包含原特征与 target）
+        data = merged_data
         
     else:  # percentile method
         print(f"=== use percentile method to define anomaly ({percentile}th percentile) ===")
@@ -572,14 +565,17 @@ def test_models_2025_data(trained_models, scaler, feature_columns):
     test_data = create_anomaly_target(test_data, method='statistical', k=2.0)
     
     # prepare features (ensure feature order is consistent)
-    X_test = pd.DataFrame()
-    for col in feature_columns:
-        if col in test_data.columns:
-            X_test[col] = test_data[col]
-        else:
-            X_test[col] = 0  # fill missing features with 0
-    
-    y_test = test_data['target']
+    # 严格对齐特征列；不存在的特征直接丢弃样本（不做填充）
+    available_cols = [col for col in feature_columns if col in test_data.columns]
+    X_test = test_data[available_cols].copy()
+    # 删除任一特征存在缺失的测试样本
+    before_rows = len(X_test)
+    valid_mask = ~X_test.isnull().any(axis=1)
+    X_test = X_test.loc[valid_mask]
+    y_test = test_data.loc[valid_mask, 'target']
+    removed = before_rows - len(X_test)
+    if removed > 0:
+        print(f"⏭️ drop {removed} test rows due to missing features (no imputation)")
     
     # standardize features
     X_test_scaled = scaler.transform(X_test)
