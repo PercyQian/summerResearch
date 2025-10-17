@@ -117,11 +117,11 @@ def load_and_process_lmp_data(da_file, rt_file, weather_dir=None):
     for d in range(7):
         combined_data[f'dow_{d}'] = (combined_data['day_of_week'] == d).astype(int)
     
-    # calculate relative difference |RT-DA|/|RT| (avoid division by zero)
+    # calculate relative difference |RT-DA|/|DA| (avoid division by zero)
     combined_data['lmp_diff'] = combined_data['total_lmp_rt'] - combined_data['total_lmp_da']
-    combined_data['abs_rt'] = np.abs(combined_data['total_lmp_rt'])
-    combined_data['abs_rt'] = np.where(combined_data['abs_rt'] < 1e-6, 1e-6, combined_data['abs_rt'])
-    combined_data['relative_diff'] = combined_data['lmp_diff'] / combined_data['abs_rt']
+    combined_data['abs_da'] = np.abs(combined_data['total_lmp_da'])
+    combined_data['abs_da'] = np.where(combined_data['abs_da'] < 1e-6, 1e-6, combined_data['abs_da'])
+    combined_data['relative_diff'] = combined_data['lmp_diff'] / combined_data['abs_da']
     
     # add historical price lag features (1-7 days ago DA price)
     for lag in range(1, 8):
@@ -334,13 +334,12 @@ def create_anomaly_target(data, method='statistical', k=2.0, percentile=95):
             count='count'
         ).reset_index()
         
-        # 不再对基线统计进行任何填充；后续将丢弃缺失或零方差样本
         global_sigma = data['relative_diff'].std()
 
         # merge baseline statistics
         merged_data = data.merge(baseline_stats, on=['hour', 'day_of_week'], how='left')
         
-        # 仅保留有效基线（mu/sigma 非空且 sigma>0）的样本
+        # only keep samples with non-empty mu/sigma and sigma>0
         valid_mask = (~merged_data['mu'].isna()) & (~merged_data['sigma'].isna()) & (merged_data['sigma'] > 0)
         merged_data = merged_data.loc[valid_mask].copy()
         
@@ -565,10 +564,10 @@ def test_models_2025_data(trained_models, scaler, feature_columns):
     test_data = create_anomaly_target(test_data, method='statistical', k=2.0)
     
     # prepare features (ensure feature order is consistent)
-    # 严格对齐特征列；不存在的特征直接丢弃样本（不做填充）
+    # strictly align feature columns; drop samples with missing features
     available_cols = [col for col in feature_columns if col in test_data.columns]
     X_test = test_data[available_cols].copy()
-    # 删除任一特征存在缺失的测试样本
+    # drop samples with missing features
     before_rows = len(X_test)
     valid_mask = ~X_test.isnull().any(axis=1)
     X_test = X_test.loc[valid_mask]
@@ -719,6 +718,46 @@ def plot_feature_importance(model, feature_names, top_n=30, model_name=""):
         print(f"- {feature_names[i]}: {importances[i]:.4f}")
 
 
+def plot_feature_importance_for_saved_model(top_n=30):
+    """
+    加载已保存的模型与特征列，绘制并保存 XGBoost 的特征重要性图。
+    输出文件：feature_importance_xgb_k{K}.png
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # 加载保存的模型与元数据（其中包含 k 值与特征列）
+    xgb_model, _scaler, feature_columns, k_value = load_model_for_prediction()
+
+    # 读取特征重要性
+    if hasattr(xgb_model, 'feature_importances_'):
+        importances = xgb_model.feature_importances_
+    elif hasattr(xgb_model, 'coef_'):
+        importances = np.abs(xgb_model.coef_[0])
+    else:
+        print("当前模型不支持特征重要性提取。")
+        return
+
+    feature_names = np.array(feature_columns)
+    indices = np.argsort(importances)[-top_n:]
+
+    # 绘图并保存
+    plt.figure(figsize=(12, 10))
+    plt.title(f'Top {top_n} Feature Importances for XGBoost (k={k_value})')
+    plt.barh(range(len(indices)), importances[indices], color='maroon', align='center')
+    plt.yticks(range(len(indices)), feature_names[indices])
+    plt.xlabel('Relative Importance')
+    plt.tight_layout()
+    out_path = f'feature_importance_xgb_k{k_value}.png'
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Saved -> {out_path}")
+
+    # 控制台打印前 top_n 的条目
+    print(f"\nTop {top_n} most important features (XGBoost, k={k_value}):")
+    for i in np.argsort(importances)[::-1][:top_n]:
+        print(f"- {feature_names[i]}: {importances[i]:.4f}")
+
 def test_different_k_values():
     """test different k values"""
     print("=== test different k values ===")
@@ -727,7 +766,7 @@ def test_different_k_values():
     k_values = [1.5, 2.0, 2.5, 3.0, 3.5]
     
     # 1. train model (using default k=2.0)
-    print("\n=== 训练模型 ===")
+    print("\n=== train model ===")
     trained_models, scaler, feature_columns, train_data = train_models_2024_data()
     
     # 2. load test data
@@ -742,7 +781,7 @@ def test_different_k_values():
     k_results = {}
     
     for k in k_values:
-        print(f"\n{'='*20} 测试 k={k} {'='*20}")
+        print(f"\n{'='*20} test k={k} {'='*20}")
         
         # create anomaly target variable using current k value
         test_data_k = create_anomaly_target(test_data.copy(), method='statistical', k=k)
