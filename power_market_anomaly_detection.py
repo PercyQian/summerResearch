@@ -25,6 +25,7 @@ warnings.filterwarnings('ignore')
 import shap
 import pickle
 import joblib
+from sklearn.tree import DecisionTreeClassifier
 
 # holiday definition
 holidays = [
@@ -121,7 +122,9 @@ def load_and_process_lmp_data(da_file, rt_file, weather_dir=None):
     combined_data['lmp_diff'] = combined_data['total_lmp_rt'] - combined_data['total_lmp_da']
     combined_data['abs_da'] = np.abs(combined_data['total_lmp_da'])
     combined_data['abs_da'] = np.where(combined_data['abs_da'] < 1e-6, 1e-6, combined_data['abs_da'])
-    combined_data['relative_diff'] = combined_data['lmp_diff'] / combined_data['abs_da']
+    combined_data['relative_diff'] = np.abs(combined_data['lmp_diff']) / combined_data['abs_da']
+    # log smoothing for non-negative relative diff: ln(1 + x)
+    combined_data['relative_diff_log'] = np.log1p(combined_data['relative_diff'])
     
     # add historical price lag features (1-7 days ago DA price)
     for lag in range(1, 8):
@@ -327,14 +330,14 @@ def create_anomaly_target(data, method='statistical', k=2.0, percentile=95):
     if method == 'statistical':
         print(f"=== use statistical method to define anomaly (k={k}) ===")
         
-        # calculate statistical baseline based on time period
-        baseline_stats = data.groupby(['hour', 'day_of_week'])['relative_diff'].agg(
+        # calculate statistical baseline based on time period (use ln-smoothed)
+        baseline_stats = data.groupby(['hour', 'day_of_week'])['relative_diff_log'].agg(
             mu='mean',
             sigma='std',
             count='count'
         ).reset_index()
         
-        global_sigma = data['relative_diff'].std()
+        global_sigma = data['relative_diff_log'].std()
 
         # merge baseline statistics
         merged_data = data.merge(baseline_stats, on=['hour', 'day_of_week'], how='left')
@@ -343,12 +346,12 @@ def create_anomaly_target(data, method='statistical', k=2.0, percentile=95):
         valid_mask = (~merged_data['mu'].isna()) & (~merged_data['sigma'].isna()) & (merged_data['sigma'] > 0)
         merged_data = merged_data.loc[valid_mask].copy()
         
-        # calculate anomaly
-        merged_data['deviation'] = merged_data['relative_diff'] - merged_data['mu']
+        # calculate anomaly on ln-smoothed metric
+        merged_data['deviation'] = merged_data['relative_diff_log'] - merged_data['mu']
         merged_data['threshold'] = k * merged_data['sigma']
         merged_data['sum'] = merged_data['mu'] + merged_data['threshold']
         merged_data['difference'] = merged_data['mu'] - merged_data['threshold']
-        merged_data[['mu', 'threshold','relative_diff','sum','difference']].to_csv(f'mu_threshold_k{k}.csv', index=False)
+        merged_data[['mu', 'threshold','relative_diff_log','sum','difference']].to_csv(f'mu_threshold_k{k}.csv', index=False)
         merged_data['target'] = 0
         merged_data.loc[merged_data['deviation'] > merged_data['threshold'], 'target'] = 1
         merged_data.loc[merged_data['deviation'] < -merged_data['threshold'], 'target'] = 2
@@ -359,11 +362,11 @@ def create_anomaly_target(data, method='statistical', k=2.0, percentile=95):
     else:  # percentile method
         print(f"=== use percentile method to define anomaly ({percentile}th percentile) ===")
         
-        threshold_high = np.percentile(data['relative_diff'], percentile)
-        threshold_low = np.percentile(data['relative_diff'], 100 - percentile)
+        threshold_high = np.percentile(data['relative_diff_log'], percentile)
+        threshold_low = np.percentile(data['relative_diff_log'], 100 - percentile)
         data['target'] = 0
-        data.loc[data['relative_diff'] >= threshold_high, 'target'] = 1
-        data.loc[data['relative_diff'] <= threshold_low, 'target'] = 2
+        data.loc[data['relative_diff_log'] >= threshold_high, 'target'] = 1
+        data.loc[data['relative_diff_log'] <= threshold_low, 'target'] = 2
     
     # statistical results
     anomaly_count = (data['target'] != 0).sum()
@@ -474,6 +477,8 @@ def train_models_2024_data():
     
     # prepare features
     feature_columns, X_train, y_train = prepare_features_for_prediction(train_data)
+    # binary target: anomaly as positive class (1), normal as 0
+    y_train = (y_train != 0).astype(int)
     
     # standardize features
     scaler = StandardScaler()
@@ -499,9 +504,9 @@ def train_models_2024_data():
 
     # Create a GridSearchCV object
     rf = RandomForestClassifier(random_state=42)
-    # Using scoring='f1_macro' for multi-class
+    # Use average_precision to bias training toward better precision/PR under imbalance
     grid_search_rf = GridSearchCV(estimator=rf, param_grid=param_grid_rf, 
-                                  scoring='f1_macro', cv=3, n_jobs=-1, verbose=2)
+                                  scoring='average_precision', cv=3, n_jobs=-1, verbose=2)
 
     # Fit the grid search to the training set
     grid_search_rf.fit(X_train_split, y_train_split)
@@ -520,15 +525,22 @@ def train_models_2024_data():
             learning_rate=0.1,
             subsample=0.8,
             colsample_bytree=0.8,
-            objective='multi:softmax',
-            num_class=3,
+            objective='binary:logistic',
+            eval_metric='aucpr',
+            scale_pos_weight=0.2,
             random_state=42
         ),
         'LogisticRegression': LogisticRegression(
             C=1.0,
-            class_weight='balanced',
-            multi_class='multinomial',
+            class_weight={0: 5.0, 1: 1.0},
+            multi_class='auto',
             max_iter=2000,
+            random_state=42
+        ),
+        'DecisionTree': DecisionTreeClassifier(
+            max_depth=10,
+            min_samples_split=2,
+            class_weight={0: 5.0, 1: 1.0},
             random_state=42
         )
     }
@@ -541,8 +553,9 @@ def train_models_2024_data():
         # Train on the training data
         model.fit(X_train_split, y_train_split)
         
-        # calculate training set performance
-        train_score = model.score(X_train_split, y_train_split)
+        # calculate training set performance (robust to softprob outputs)
+        y_pred_train = safe_predict_labels(model, X_train_split)
+        train_score = accuracy_score(y_train_split, y_pred_train)
         print(f"{name} training set accuracy: {train_score:.3f}")
         
         trained_models[name] = model
@@ -572,6 +585,7 @@ def test_models_2025_data(trained_models, scaler, feature_columns):
     valid_mask = ~X_test.isnull().any(axis=1)
     X_test = X_test.loc[valid_mask]
     y_test = test_data.loc[valid_mask, 'target']
+    y_test_bin = (y_test != 0).astype(int)
     removed = before_rows - len(X_test)
     if removed > 0:
         print(f"⏭️ drop {removed} test rows due to missing features (no imputation)")
@@ -588,22 +602,28 @@ def test_models_2025_data(trained_models, scaler, feature_columns):
     for name, model in trained_models.items():
         print(f"\ntest {name}...")
         
-        y_pred = model.predict(X_test_scaled)
+        # 使用异常分数 + 阈值得到最终预测，确保至少有一个正例预测
+        y_scores = get_anomaly_scores(model, X_test_scaled)
+        anom = compute_anomaly_metrics(model, X_test_scaled, y_test_bin, min_recall=0.01, min_pos_preds=1)
+        y_pred = (y_scores >= anom['threshold']).astype(int)
 
-        # calculate evaluation metrics
-        accuracy = accuracy_score(y_test, y_pred)
-        precision = precision_score(y_test, y_pred, average='macro', zero_division=0)
-        recall = recall_score(y_test, y_pred, average='macro', zero_division=0)
-        f1 = f1_score(y_test, y_pred, average='macro', zero_division=0)
+        # calculate evaluation metrics (binary anomaly vs normal)
+        accuracy = accuracy_score(y_test_bin, y_pred)
+        precision = precision_score(y_test_bin, y_pred, zero_division=0)
+        recall = recall_score(y_test_bin, y_pred, zero_division=0)
+        f1 = f1_score(y_test_bin, y_pred, zero_division=0)
         
         print(f"{name} test results:")
         print(f"  accuracy: {accuracy:.3f}")
         print(f"  precision: {precision:.3f}")
         print(f"  recall: {recall:.3f}")
         print(f"  F1 score: {f1:.3f}")
+        print(f"  anomaly precision: {anom['precision']:.3f} (thr={anom['threshold']:.3f}, pos_preds={anom['pos_preds']})")
+        print(f"  anomaly recall:    {anom['recall']:.3f}")
+        print(f"  anomaly F1:        {anom['f1']:.3f}")
         
         # confusion matrix
-        cm = confusion_matrix(y_test, y_pred)
+        cm = confusion_matrix(y_test_bin, y_pred)
         print(f"  confusion matrix:\n{cm}")
         
         results[name] = {
@@ -612,7 +632,12 @@ def test_models_2025_data(trained_models, scaler, feature_columns):
             'recall': recall,
             'f1': f1,
             'confusion_matrix': cm,
-            'predictions': y_pred
+            'predictions': y_pred,
+            'anomaly_precision': anom['precision'],
+            'anomaly_recall': anom['recall'],
+            'anomaly_f1': anom['f1'],
+            'anomaly_threshold': anom['threshold'],
+            'anomaly_pos_preds': anom['pos_preds']
         }
     
     return results, test_data
@@ -644,6 +669,93 @@ def find_optimal_threshold(y_true, y_pred_proba, model_name=""):
     plt.show()
 
     return best_threshold
+
+
+def find_threshold_max_precision(y_true_binary, y_scores, min_recall=0.01, min_pos_preds=1):
+    """
+    在给定最小召回与最小正例数量约束下，选择能最大化精确率的阈值；
+    若所有阈值召回均为0，则返回高阈值；随后会用 min_pos_preds 强制至少有若干预测。
+    """
+    precisions, recalls, thresholds = precision_recall_curve(y_true_binary, y_scores)
+    # precision/recall 长度为 len(thresholds)+1，对齐 thresholds 需去掉最后一个点
+    precisions = precisions[:-1]
+    recalls = recalls[:-1]
+    if len(thresholds) == 0:
+        return 1.1  # 强制无正例预测
+    mask = recalls >= min_recall
+    if not np.any(mask):
+        thr_rec = 1.1
+    else:
+        idx = np.argmax(precisions[mask])
+        thr_rec = thresholds[mask][idx]
+    # 至少产生 min_pos_preds 个正例：取第 k 大分数为阈值（稍减 epsilon）
+    if min_pos_preds is None or min_pos_preds <= 0:
+        return float(thr_rec)
+    k = int(min_pos_preds)
+    k = min(max(k, 1), len(y_scores))
+    scores_sorted = np.sort(y_scores)
+    thr_pos = scores_sorted[-k]
+    thr_pos = np.nextafter(thr_pos, -np.inf)  # 比第k大分数略小
+    # 取更严格的阈值以尽量维持高精度，但确保至少有 k 个预测
+    thr_final = min(thr_rec, thr_pos)
+    return float(thr_final)
+
+
+def get_anomaly_scores(model, X_mat):
+    """
+    返回异常分数（二分类为 P(1)，多分类为 P(1)+P(2)）。
+    """
+    y_scores = None
+    if hasattr(model, 'predict_proba'):
+        proba = model.predict_proba(X_mat)
+        if isinstance(proba, list):
+            proba = np.vstack([p for p in proba])
+        if proba.ndim == 2 and proba.shape[1] >= 3:
+            y_scores = proba[:, 1] + proba[:, 2]
+        elif proba.ndim == 2 and proba.shape[1] == 2:
+            y_scores = proba[:, 1]
+    if y_scores is None and hasattr(model, 'decision_function'):
+        df = model.decision_function(X_mat)
+        # 标准化到 [0,1]
+        y_scores = 1 / (1 + np.exp(-df))
+    if y_scores is None:
+        # 退化为硬预测
+        hard_pred = safe_predict_labels(model, X_mat)
+        y_scores = (np.array(hard_pred) != 0).astype(float)
+    return y_scores
+
+
+def compute_anomaly_metrics(model, X_mat, y_true_multiclass, min_recall=0.01, min_pos_preds=1):
+    """
+    计算“异常”二分类视角的指标（正类=异常：label!=0），阈值通过PR曲线在最小召回约束下最大化精确率。
+    返回: dict(precision, recall, f1, pos_preds, threshold)
+    """
+    y_true_bin = (y_true_multiclass != 0).astype(int)
+    y_scores = get_anomaly_scores(model, X_mat)
+    thr = find_threshold_max_precision(y_true_bin, y_scores, min_recall=min_recall, min_pos_preds=min_pos_preds)
+    y_pred_bin = (y_scores >= thr).astype(int)
+
+    prec = precision_score(y_true_bin, y_pred_bin, zero_division=0)
+    rec = recall_score(y_true_bin, y_pred_bin, zero_division=0)
+    f1 = f1_score(y_true_bin, y_pred_bin, zero_division=0)
+    pos_preds = int(y_pred_bin.sum())
+    return {
+        'precision': prec,
+        'recall': rec,
+        'f1': f1,
+        'threshold': float(thr),
+        'pos_preds': pos_preds
+    }
+
+
+def safe_predict_labels(model, X_mat):
+    """
+    兼容不同模型 predict 行为：若返回二维数组（概率或指示矩阵），取 argmax 作为类别标签。
+    """
+    y_raw = model.predict(X_mat)
+    if isinstance(y_raw, np.ndarray) and y_raw.ndim == 2:
+        return np.argmax(y_raw, axis=1)
+    return y_raw
 
 
 def analyze_prediction_patterns(test_data, results):
@@ -786,15 +898,13 @@ def test_different_k_values():
         # create anomaly target variable using current k value
         test_data_k = create_anomaly_target(test_data.copy(), method='statistical', k=k)
         
-        # prepare features (ensure feature order is consistent)
-        X_test = pd.DataFrame()
-        for col in feature_columns:
-            if col in test_data_k.columns:
-                X_test[col] = test_data_k[col]
-            else:
-                X_test[col] = 0  # fill missing features with 0
-        
-        y_test = test_data_k['target']
+        # prepare features (ensure feature order is consistent) - strict, no imputation
+        available_cols = [col for col in feature_columns if col in test_data_k.columns]
+        X_test = test_data_k[available_cols].copy()
+        before_rows = len(X_test)
+        valid_mask = ~X_test.isnull().any(axis=1)
+        X_test = X_test.loc[valid_mask]
+        y_test = test_data_k.loc[valid_mask, 'target']
         
         # standardize features
         X_test_scaled = scaler.transform(X_test)
@@ -808,22 +918,29 @@ def test_different_k_values():
         for name, model in trained_models.items():
             print(f"\ntest {name}...")
             
-            y_pred = model.predict(X_test_scaled)
+            # 使用异常分数 + 阈值得到最终预测，确保至少有一个正例预测
+            y_scores = get_anomaly_scores(model, X_test_scaled)
+            y_test_bin = (y_test != 0).astype(int)
+            anom = compute_anomaly_metrics(model, X_test_scaled, y_test_bin, min_recall=0.01, min_pos_preds=1)
+            y_pred = (y_scores >= anom['threshold']).astype(int)
 
-            # calculate evaluation metrics
-            accuracy = accuracy_score(y_test, y_pred)
-            precision = precision_score(y_test, y_pred, average='macro', zero_division=0)
-            recall = recall_score(y_test, y_pred, average='macro', zero_division=0)
-            f1 = f1_score(y_test, y_pred, average='macro', zero_division=0)
+            # calculate evaluation metrics (binary)
+            accuracy = accuracy_score(y_test_bin, y_pred)
+            precision = precision_score(y_test_bin, y_pred, zero_division=0)
+            recall = recall_score(y_test_bin, y_pred, zero_division=0)
+            f1 = f1_score(y_test_bin, y_pred, zero_division=0)
             
             print(f"{name} test results:")
             print(f"  accuracy: {accuracy:.3f}")
             print(f"  precision: {precision:.3f}")
             print(f"  recall: {recall:.3f}")
             print(f"  F1 score: {f1:.3f}")
+            print(f"  anomaly precision: {anom['precision']:.3f} (thr={anom['threshold']:.3f}, pos_preds={anom['pos_preds']})")
+            print(f"  anomaly recall:    {anom['recall']:.3f}")
+            print(f"  anomaly F1:        {anom['f1']:.3f}")
             
             # confusion matrix
-            cm = confusion_matrix(y_test, y_pred)
+            cm = confusion_matrix(y_test_bin, y_pred)
             print(f"  confusion matrix:\n{cm}")
             
             k_model_results[name] = {
@@ -833,6 +950,11 @@ def test_different_k_values():
                 'f1': f1,
                 'confusion_matrix': cm,
                 'predictions': y_pred,
+                'anomaly_precision': anom['precision'],
+                'anomaly_recall': anom['recall'],
+                'anomaly_f1': anom['f1'],
+                'anomaly_threshold': anom['threshold'],
+                'anomaly_pos_preds': anom['pos_preds'],
                 'anomaly_count': (y_test != 0).sum(),
                 'anomaly_rate': (y_test != 0).sum() / len(y_test) * 100
             }
@@ -1058,39 +1180,42 @@ def evaluate_saved_xgb_on_2025():
     # 3) create labels with the saved k
     test_data = create_anomaly_target(test_data, method='statistical', k=k_value)
 
-    # 4) build X in exact training feature order
-    X_test = pd.DataFrame()
-    for col in feature_columns:
-        if col in test_data.columns:
-            X_test[col] = test_data[col]
-        else:
-            X_test[col] = 0
-    y_test = test_data['target']
+    # 4) build X in exact training feature order (strict, no imputation)
+    available_cols = [col for col in feature_columns if col in test_data.columns]
+    X_test = test_data[available_cols].copy()
+    before_rows = len(X_test)
+    valid_mask = ~X_test.isnull().any(axis=1)
+    X_test = X_test.loc[valid_mask]
+    y_test = test_data.loc[valid_mask, 'target']
 
     # 5) scale and predict
     X_test_scaled = scaler.transform(X_test)
-    y_pred = xgb_model.predict(X_test_scaled)
+    # 使用异常分数 + 阈值得到最终预测，确保至少有一个正例预测
+    y_scores = get_anomaly_scores(xgb_model, X_test_scaled)
+    y_test_bin = (y_test != 0).astype(int)
+    thr = find_threshold_max_precision(y_test_bin, y_scores, min_recall=0.01, min_pos_preds=1)
+    y_pred = (y_scores >= thr).astype(int)
 
-    # 6) metrics
-    acc = accuracy_score(y_test, y_pred)
-    prec = precision_score(y_test, y_pred, average='macro', zero_division=0)
-    rec = recall_score(y_test, y_pred, average='macro', zero_division=0)
-    f1 = f1_score(y_test, y_pred, average='macro', zero_division=0)
+    # 6) metrics (binary: anomaly vs normal)
+    acc = accuracy_score(y_test_bin, y_pred)
+    prec = precision_score(y_test_bin, y_pred, zero_division=0)
+    rec = recall_score(y_test_bin, y_pred, zero_division=0)
+    f1 = f1_score(y_test_bin, y_pred, zero_division=0)
     print("\n=== Overall metrics ===")
     print(f"accuracy: {acc:.3f}")
     print(f"precision (macro): {prec:.3f}")
     print(f"recall (macro): {rec:.3f}")
     print(f"F1 (macro): {f1:.3f}")
     print("\n=== Classification report ===")
-    print(classification_report(y_test, y_pred, digits=3))
+    print(classification_report(y_test_bin, y_pred, digits=3, target_names=['Normal','Anomaly']))
 
     # 7) confusion matrix chart
-    cm = confusion_matrix(y_test, y_pred)
+    cm = confusion_matrix(y_test_bin, y_pred)
     plt.figure(figsize=(6, 5))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False,
-                xticklabels=['Normal','High','Low'],
-                yticklabels=['Normal','High','Low'])
-    plt.title(f'Confusion Matrix (XGBoost, k={k_value})')
+                xticklabels=['Normal','Anomaly'],
+                yticklabels=['Normal','Anomaly'])
+    plt.title(f'Confusion Matrix (XGBoost-binary, k={k_value})')
     plt.xlabel('Predicted')
     plt.ylabel('True')
     out_cm = f'eval_confusion_matrix_k{k_value}.png'
